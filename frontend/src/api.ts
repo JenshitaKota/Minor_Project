@@ -92,6 +92,9 @@ export const api = {
 
   getRecord: (id: string) => request<ManufacturingRecord>(`/records/${id}`),
 
+  listRecords: (page = 1, pageSize = 20) =>
+    request<Page<ManufacturingRecord>>(`/records?page=${page}&pageSize=${pageSize}`),
+
   updateContent: (id: string, content: RecordContent, equipmentId?: string | null) =>
     request<ManufacturingRecord>(`/records/${id}`, {
       method: "PATCH",

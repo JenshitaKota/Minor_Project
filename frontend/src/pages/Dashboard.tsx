@@ -68,6 +68,9 @@ export default function Dashboard() {
           <Link to="/analytics" className="nav-link">
             Analytics
           </Link>
+          <Link to="/records" className="nav-link">
+            All Records
+          </Link>
           <Link to="/verify" className="nav-link">
             Public Verification Page →
           </Link>

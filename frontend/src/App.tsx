@@ -4,6 +4,7 @@ import PublicVerify from "./pages/PublicVerify";
 import Login from "./pages/Login";
 import AdminUsers from "./pages/AdminUsers";
 import Analytics from "./pages/Analytics";
+import AllRecords from "./pages/AllRecords";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 
 export default function App() {
@@ -32,6 +33,14 @@ export default function App() {
         element={
           <ProtectedRoute>
             <Analytics />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/records"
+        element={
+          <ProtectedRoute>
+            <AllRecords />
           </ProtectedRoute>
         }
       />

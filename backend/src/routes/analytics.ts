@@ -24,13 +24,15 @@ analyticsRouter.get(
     }
 
     // "Pass rate" is computed live: every anchored record's current DB content is re-hashed
-    // and checked against the chain right now, not read from a cached/stale flag.
+    // and checked against the chain right now, not read from a cached/stale flag. The
+    // per-record checks are read-only chain calls, so they're fired concurrently rather
+    // than one round-trip at a time - this is what keeps that live check cheap as the
+    // number of anchored records grows.
     const anchoredRecords = records.filter((r) => r.status === "ANCHORED" && r.contentHash);
-    let passed = 0;
-    for (const record of anchoredRecords) {
-      const { matches } = await verifyOnChain(recordIdToBytes32(record.id), hashRecord(record));
-      if (matches) passed++;
-    }
+    const verifications = await Promise.all(
+      anchoredRecords.map((record) => verifyOnChain(recordIdToBytes32(record.id), hashRecord(record)))
+    );
+    const passed = verifications.filter((v) => v.matches).length;
     const checked = anchoredRecords.length;
     const passRatePercent = checked > 0 ? Math.round((passed / checked) * 1000) / 10 : null;
 

@@ -310,6 +310,10 @@ input, textarea {
   font-size: 13px;
 }
 
+.content-table tr.record-row:hover {
+  background: var(--color-bg);
+}
+
 .content-table tr.changed td:first-child {
   color: var(--color-danger);
   font-weight: 600;
