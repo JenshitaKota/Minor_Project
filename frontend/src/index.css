@@ -157,6 +157,13 @@ input, textarea {
   padding-left: 18px;
 }
 
+.chain-verified {
+  color: var(--color-success);
+  font-weight: 600;
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
 .inline-equipment-form {
   display: flex;
   flex-direction: column;

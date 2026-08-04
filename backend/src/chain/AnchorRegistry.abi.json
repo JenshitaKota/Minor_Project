@@ -37,6 +37,31 @@
     "inputs": [
       {
         "indexed": true,
+        "internalType": "bytes32",
+        "name": "recordId",
+        "type": "bytes32"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes32",
+        "name": "findingHash",
+        "type": "bytes32"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "timestamp",
+        "type": "uint256"
+      }
+    ],
+    "name": "AnomalyFindingAnchored",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
         "internalType": "address",
         "name": "previousOwner",
         "type": "address"
@@ -91,6 +116,24 @@
       },
       {
         "internalType": "bytes32",
+        "name": "findingHash",
+        "type": "bytes32"
+      }
+    ],
+    "name": "anchorAnomalyFinding",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "recordId",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "bytes32",
         "name": "contentHash",
         "type": "bytes32"
       }
@@ -131,6 +174,37 @@
         "internalType": "struct AnchorRegistry.Anchor",
         "name": "",
         "type": "tuple"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "recordId",
+        "type": "bytes32"
+      }
+    ],
+    "name": "getAnomalyFindings",
+    "outputs": [
+      {
+        "components": [
+          {
+            "internalType": "bytes32",
+            "name": "findingHash",
+            "type": "bytes32"
+          },
+          {
+            "internalType": "uint256",
+            "name": "timestamp",
+            "type": "uint256"
+          }
+        ],
+        "internalType": "struct AnchorRegistry.AnomalyFinding[]",
+        "name": "",
+        "type": "tuple[]"
       }
     ],
     "stateMutability": "view",

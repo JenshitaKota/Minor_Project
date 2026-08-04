@@ -14,11 +14,28 @@ contract AnchorRegistry is Ownable {
 
     mapping(bytes32 => Anchor) private _anchors;
 
+    /// @notice A single anomaly verdict anchored against a record - e.g. "this approval
+    /// was flagged as unusually fast for this reviewer". Anchoring the finding itself
+    /// (not just the record content) means the verdict can't be silently altered or
+    /// suppressed later, even by someone with direct database access.
+    struct AnomalyFinding {
+        bytes32 findingHash;
+        uint256 timestamp;
+    }
+
+    mapping(bytes32 => AnomalyFinding[]) private _anomalyFindings;
+
     event RecordAnchored(
         bytes32 indexed recordId,
         bytes32 contentHash,
         uint256 timestamp,
         address indexed anchoredBy
+    );
+
+    event AnomalyFindingAnchored(
+        bytes32 indexed recordId,
+        bytes32 findingHash,
+        uint256 timestamp
     );
 
     constructor(address initialOwner) Ownable(initialOwner) {}
@@ -62,5 +79,27 @@ contract AnchorRegistry is Ownable {
 
     function getAnchor(bytes32 recordId) external view returns (Anchor memory) {
         return _anchors[recordId];
+    }
+
+    /// @notice Anchors an anomaly verdict (e.g. a fast-approval or off-hours-approval
+    /// finding) against a record. A record may accumulate several distinct findings;
+    /// re-anchoring the exact same finding hash reverts, making this idempotent against
+    /// retries.
+    function anchorAnomalyFinding(bytes32 recordId, bytes32 findingHash) external onlyOwner {
+        require(findingHash != bytes32(0), "AnchorRegistry: empty finding hash");
+
+        AnomalyFinding[] storage findings = _anomalyFindings[recordId];
+        for (uint256 i = 0; i < findings.length; i++) {
+            // slither-disable-next-line incorrect-equality
+            require(findings[i].findingHash != findingHash, "AnchorRegistry: finding already anchored");
+        }
+
+        findings.push(AnomalyFinding({findingHash: findingHash, timestamp: block.timestamp}));
+
+        emit AnomalyFindingAnchored(recordId, findingHash, block.timestamp);
+    }
+
+    function getAnomalyFindings(bytes32 recordId) external view returns (AnomalyFinding[] memory) {
+        return _anomalyFindings[recordId];
     }
 }

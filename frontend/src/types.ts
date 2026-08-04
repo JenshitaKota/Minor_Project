@@ -35,6 +35,13 @@ export interface Anomaly {
   label: string;
 }
 
+export interface AnomalyFinding {
+  id: string;
+  label: string;
+  anchored: boolean;
+  anchoredAt: string | null;
+}
+
 export type RecordEventType =
   | "CREATED"
   | "EDITED"

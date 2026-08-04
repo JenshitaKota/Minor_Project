@@ -42,6 +42,36 @@ describe("batch and record lifecycle", () => {
     expect(verifyRes.body.matches).toBe(true);
   });
 
+  it("anchors a fast-approval anomaly finding on-chain at approval time", async () => {
+    const batchRes = await request(app)
+      .post("/batches")
+      .set("Authorization", auth(operatorToken))
+      .send({ batchNumber: uniqueId("BATCH"), product: "Test Product", plannedQuantity: 1000 });
+    const batchId = batchRes.body.id;
+
+    const createRes = await request(app)
+      .post("/records")
+      .set("Authorization", auth(operatorToken))
+      .send({ batchId, stage: "Mixing", content: { operator: "Test Op", observedQuantity: 990 } });
+    const recordId = createRes.body.id;
+
+    await request(app).post(`/records/${recordId}/submit`).set("Authorization", auth(operatorToken));
+    // Approving immediately after submitting (as this test does) is well under the
+    // fixed 60s fallback threshold, so this should always trigger fast-approval.
+    const approveRes = await request(app).post(`/records/${recordId}/approve`).set("Authorization", auth(qaToken));
+    expect(approveRes.status).toBe(200);
+    expect(approveRes.body.anomalies.map((a: { id: string }) => a.id)).toContain("fast-approval");
+
+    const findingsRes = await request(app)
+      .get(`/records/${recordId}/anomaly-findings`)
+      .set("Authorization", auth(qaToken));
+    expect(findingsRes.status).toBe(200);
+    const fastApprovalFinding = findingsRes.body.findings.find((f: { id: string }) => f.id === "fast-approval");
+    expect(fastApprovalFinding).toBeTruthy();
+    expect(fastApprovalFinding.anchored).toBe(true);
+    expect(fastApprovalFinding.anchoredAt).toBeTruthy();
+  });
+
   it("detects tampering after a direct content edit post-anchor", async () => {
     const batchRes = await request(app)
       .post("/batches")

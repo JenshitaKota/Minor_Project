@@ -123,4 +123,91 @@ contract AnchorRegistryTest is Test {
         registry.anchorRecord(recordId, secondHash);
         vm.stopPrank();
     }
+
+    function testAnchorAnomalyFindingStoresHashAndTimestamp() public {
+        bytes32 recordId = keccak256("batch-001/record-1");
+        bytes32 findingHash = keccak256("fast-approval finding v1");
+
+        vm.warp(1_700_000_000);
+        vm.prank(owner);
+        registry.anchorAnomalyFinding(recordId, findingHash);
+
+        AnchorRegistry.AnomalyFinding[] memory findings = registry.getAnomalyFindings(recordId);
+        assertEq(findings.length, 1);
+        assertEq(findings[0].findingHash, findingHash);
+        assertEq(findings[0].timestamp, 1_700_000_000);
+    }
+
+    function testAnchorAnomalyFindingAccumulatesMultipleDistinctFindings() public {
+        bytes32 recordId = keccak256("batch-001/record-1");
+        bytes32 fastApprovalFinding = keccak256("fast-approval finding");
+        bytes32 offHoursFinding = keccak256("off-hours-approval finding");
+
+        vm.startPrank(owner);
+        registry.anchorAnomalyFinding(recordId, fastApprovalFinding);
+        registry.anchorAnomalyFinding(recordId, offHoursFinding);
+        vm.stopPrank();
+
+        AnchorRegistry.AnomalyFinding[] memory findings = registry.getAnomalyFindings(recordId);
+        assertEq(findings.length, 2);
+        assertEq(findings[0].findingHash, fastApprovalFinding);
+        assertEq(findings[1].findingHash, offHoursFinding);
+    }
+
+    function testCannotAnchorDuplicateAnomalyFinding() public {
+        bytes32 recordId = keccak256("batch-001/record-1");
+        bytes32 findingHash = keccak256("fast-approval finding");
+
+        vm.startPrank(owner);
+        registry.anchorAnomalyFinding(recordId, findingHash);
+
+        vm.expectRevert("AnchorRegistry: finding already anchored");
+        registry.anchorAnomalyFinding(recordId, findingHash);
+        vm.stopPrank();
+    }
+
+    function testCannotAnchorEmptyAnomalyFindingHash() public {
+        vm.prank(owner);
+        vm.expectRevert("AnchorRegistry: empty finding hash");
+        registry.anchorAnomalyFinding(keccak256("some-record"), bytes32(0));
+    }
+
+    function testNonOwnerCannotAnchorAnomalyFinding() public {
+        vm.prank(stranger);
+        vm.expectRevert(
+            abi.encodeWithSignature("OwnableUnauthorizedAccount(address)", stranger)
+        );
+        registry.anchorAnomalyFinding(keccak256("some-record"), keccak256("some-finding"));
+    }
+
+    function testGetAnomalyFindingsReturnsEmptyForUnanchoredRecord() public view {
+        AnchorRegistry.AnomalyFinding[] memory findings = registry.getAnomalyFindings(keccak256("never-anchored"));
+        assertEq(findings.length, 0);
+    }
+
+    /// @dev Fuzz: anchoring one finding then reading it back must always return exactly
+    /// that hash, regardless of recordId/findingHash values.
+    function testFuzzAnchorAnomalyFindingThenReadBackAlwaysMatches(bytes32 recordId, bytes32 findingHash) public {
+        vm.assume(findingHash != bytes32(0));
+
+        vm.prank(owner);
+        registry.anchorAnomalyFinding(recordId, findingHash);
+
+        AnchorRegistry.AnomalyFinding[] memory findings = registry.getAnomalyFindings(recordId);
+        assertEq(findings.length, 1);
+        assertEq(findings[0].findingHash, findingHash);
+    }
+
+    /// @dev Fuzz: re-anchoring the same finding hash for the same record must always
+    /// revert, no matter the values.
+    function testFuzzDuplicateAnomalyFindingAlwaysReverts(bytes32 recordId, bytes32 findingHash) public {
+        vm.assume(findingHash != bytes32(0));
+
+        vm.startPrank(owner);
+        registry.anchorAnomalyFinding(recordId, findingHash);
+
+        vm.expectRevert("AnchorRegistry: finding already anchored");
+        registry.anchorAnomalyFinding(recordId, findingHash);
+        vm.stopPrank();
+    }
 }

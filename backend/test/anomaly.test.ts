@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { evaluateAnomalies } from "../src/anomaly/rules";
+import type { ReviewerBaseline } from "../src/anomaly/baseline";
 
 const MONDAY_10AM = (minuteOffset = 0) => new Date(2026, 0, 5, 10, minuteOffset, 0);
 const SATURDAY_10AM = new Date(2026, 0, 10, 10, 0, 0);
@@ -59,5 +60,47 @@ describe("evaluateAnomalies", () => {
     const submittedAt = new Date(reviewedAt.getTime() - 30 * 1000);
     const anomalies = evaluateAnomalies({ submittedAt, reviewedAt });
     expect(anomalies.map((a) => a.id).sort()).toEqual(["fast-approval", "off-hours-approval"]);
+  });
+
+  describe("with a reviewer baseline", () => {
+    it("ignores the baseline and falls back to the fixed threshold below the minimum sample size", () => {
+      const baseline: ReviewerBaseline = { sampleSize: 3, meanMs: 20 * 60 * 1000, stdDevMs: 60 * 1000 };
+      const submittedAt = MONDAY_10AM(0);
+      // 90s: over the fixed 60s threshold, so not flagged - even though it would be a
+      // huge outlier (z well below -1.5) against this reviewer's baseline, if it applied.
+      const reviewedAt = new Date(submittedAt.getTime() + 90 * 1000);
+      expect(evaluateAnomalies({ submittedAt, reviewedAt }, baseline)).toEqual([]);
+    });
+
+    it("flags a review as fast relative to the reviewer's own baseline, even when far slower than the fixed threshold", () => {
+      const baseline: ReviewerBaseline = { sampleSize: 10, meanMs: 30 * 60 * 1000, stdDevMs: 2 * 60 * 1000 };
+      const submittedAt = MONDAY_10AM(0);
+      // 25 minutes: nowhere near the 60s fixed threshold, but z = -2.5 against a reviewer
+      // who normally takes ~30 minutes with a tight 2-minute spread.
+      const reviewedAt = new Date(submittedAt.getTime() + 25 * 60 * 1000);
+      const anomalies = evaluateAnomalies({ submittedAt, reviewedAt }, baseline);
+      expect(anomalies.map((a) => a.id)).toEqual(["fast-approval"]);
+      expect(anomalies[0].label).toMatch(/this reviewer's own history/);
+    });
+
+    it("does not flag a naturally-fast reviewer's typical speed, even when under the fixed threshold", () => {
+      const baseline: ReviewerBaseline = { sampleSize: 8, meanMs: 45 * 1000, stdDevMs: 10 * 1000 };
+      const submittedAt = MONDAY_10AM(0);
+      // 40s would trip the old fixed 60s rule, but z = -0.5 is unremarkable for a
+      // reviewer whose average approval takes 45s.
+      const reviewedAt = new Date(submittedAt.getTime() + 40 * 1000);
+      expect(evaluateAnomalies({ submittedAt, reviewedAt }, baseline)).toEqual([]);
+    });
+
+    it("falls back to the fixed threshold when the baseline has zero variance (avoids divide-by-zero)", () => {
+      const baseline: ReviewerBaseline = { sampleSize: 10, meanMs: 2 * 60 * 1000, stdDevMs: 0 };
+      const submittedAt = MONDAY_10AM(0);
+
+      const fast = evaluateAnomalies({ submittedAt, reviewedAt: new Date(submittedAt.getTime() + 30 * 1000) }, baseline);
+      expect(fast.map((a) => a.id)).toEqual(["fast-approval"]);
+
+      const notFast = evaluateAnomalies({ submittedAt, reviewedAt: new Date(submittedAt.getTime() + 90 * 1000) }, baseline);
+      expect(notFast).toEqual([]);
+    });
   });
 });

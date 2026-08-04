@@ -1,4 +1,14 @@
-import type { AnalyticsSummary, Batch, Equipment, ManufacturingRecord, RecordContent, Role, User, VerifyResult } from "./types";
+import type {
+  AnalyticsSummary,
+  AnomalyFinding,
+  Batch,
+  Equipment,
+  ManufacturingRecord,
+  RecordContent,
+  Role,
+  User,
+  VerifyResult,
+} from "./types";
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:4000";
 
@@ -120,6 +130,8 @@ export const api = {
   anchor: (id: string) => request<ManufacturingRecord>(`/records/${id}/anchor`, { method: "POST" }),
 
   verify: (id: string) => request<VerifyResult>(`/records/${id}/verify`),
+
+  getAnomalyFindings: (id: string) => request<{ recordId: string; findings: AnomalyFinding[] }>(`/records/${id}/anomaly-findings`),
 
   getAnalyticsSummary: () => request<AnalyticsSummary>("/analytics/summary"),
 

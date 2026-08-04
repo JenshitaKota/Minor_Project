@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { RecordDetail } from "./RecordDetail";
+import { api } from "../api";
 import type { ManufacturingRecord, User } from "../types";
 
 const mockUseAuth = vi.fn();
@@ -18,8 +19,11 @@ vi.mock("../api", () => ({
     reject: vi.fn(),
     anchor: vi.fn(),
     verify: vi.fn(),
+    getAnomalyFindings: vi.fn().mockResolvedValue({ recordId: "rec-1", findings: [] }),
   },
 }));
+
+const mockedApi = api as unknown as { getAnomalyFindings: ReturnType<typeof vi.fn> };
 
 function makeRecord(overrides: Partial<ManufacturingRecord>): ManufacturingRecord {
   return {
@@ -51,6 +55,8 @@ function asUser(role: User["role"]): User {
 describe("RecordDetail — role and status gated actions", () => {
   beforeEach(() => {
     mockUseAuth.mockReset();
+    mockedApi.getAnomalyFindings.mockReset();
+    mockedApi.getAnomalyFindings.mockResolvedValue({ recordId: "rec-1", findings: [] });
   });
 
   it("lets an Operator edit an ANCHORED record — this is the tamper-detection demo itself", () => {
@@ -93,6 +99,43 @@ describe("RecordDetail — role and status gated actions", () => {
     );
 
     expect(screen.queryByRole("button", { name: /approve/i })).not.toBeInTheDocument();
+  });
+
+  it("shows an on-chain verification badge for an anchored anomaly finding", async () => {
+    mockUseAuth.mockReturnValue({ user: asUser("QA_MANAGER") });
+    mockedApi.getAnomalyFindings.mockResolvedValue({
+      recordId: "rec-1",
+      findings: [{ id: "fast-approval", label: "Approved unusually fast", anchored: true, anchoredAt: "2026-01-01T00:00:05.000Z" }],
+    });
+
+    render(
+      <RecordDetail
+        record={makeRecord({ status: "ANCHORED", anomalies: [{ id: "fast-approval", label: "Approved unusually fast" }] })}
+        onChanged={vi.fn()}
+        onBack={vi.fn()}
+      />
+    );
+
+    await waitFor(() => expect(screen.getByText(/verified on-chain/i)).toBeInTheDocument());
+  });
+
+  it("does not show an on-chain badge when the finding hasn't been anchored yet", async () => {
+    mockUseAuth.mockReturnValue({ user: asUser("QA_MANAGER") });
+    mockedApi.getAnomalyFindings.mockResolvedValue({
+      recordId: "rec-1",
+      findings: [{ id: "fast-approval", label: "Approved unusually fast", anchored: false, anchoredAt: null }],
+    });
+
+    render(
+      <RecordDetail
+        record={makeRecord({ status: "ANCHORED", anomalies: [{ id: "fast-approval", label: "Approved unusually fast" }] })}
+        onChanged={vi.fn()}
+        onBack={vi.fn()}
+      />
+    );
+
+    await waitFor(() => expect(mockedApi.getAnomalyFindings).toHaveBeenCalledWith("rec-1"));
+    expect(screen.queryByText(/verified on-chain/i)).not.toBeInTheDocument();
   });
 
   it("offers Submit for QA Review to an Operator on a clean DRAFT record", () => {

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { Equipment, ManufacturingRecord, RecordContent, VerifyResult } from "../types";
+import type { AnomalyFinding, Equipment, ManufacturingRecord, RecordContent, VerifyResult } from "../types";
 import { StatusBadge } from "./StatusBadge";
 import { api } from "../api";
 import { useAuth } from "../context/AuthContext";
@@ -30,6 +30,7 @@ export function RecordDetail({ record, onChanged, onBack }: Props) {
   const [rejectReason, setRejectReason] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [anomalyFindings, setAnomalyFindings] = useState<AnomalyFinding[]>([]);
 
   useEffect(() => {
     setEditedContent(record.content);
@@ -43,6 +44,17 @@ export function RecordDetail({ record, onChanged, onBack }: Props) {
   useEffect(() => {
     api.listEquipment().then(setEquipmentList).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (record.status === "ANCHORED" && record.anomalies.length > 0) {
+      api
+        .getAnomalyFindings(record.id)
+        .then((res) => setAnomalyFindings(res.findings))
+        .catch(() => setAnomalyFindings([]));
+    } else {
+      setAnomalyFindings([]);
+    }
+  }, [record.id, record.status, record.anomalies.length]);
 
   const isDirty = !contentEquals(editedContent, record.content) || editedEquipmentId !== (record.equipmentId ?? "");
 
@@ -129,9 +141,23 @@ export function RecordDetail({ record, onChanged, onBack }: Props) {
         <div className="anomaly-banner">
           <div className="headline">⚠ Flagged for review</div>
           <ul>
-            {record.anomalies.map((a) => (
-              <li key={a.id}>{a.label}</li>
-            ))}
+            {record.anomalies.map((a) => {
+              const finding = anomalyFindings.find((f) => f.id === a.id);
+              return (
+                <li key={a.id}>
+                  {a.label}
+                  {finding?.anchored && (
+                    <span
+                      className="chain-verified"
+                      title={finding.anchoredAt ? `Anchored on-chain at ${new Date(finding.anchoredAt).toLocaleString()}` : undefined}
+                    >
+                      {" "}
+                      ⛓ Verified on-chain
+                    </span>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}

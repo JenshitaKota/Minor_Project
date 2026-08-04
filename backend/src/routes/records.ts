@@ -1,12 +1,19 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../db/client";
-import { hashRecord, recordIdToBytes32 } from "../chain/hash";
-import { anchorOnChain, verifyOnChain, findAnchorTxHash } from "../chain/anchorRegistry";
+import { hashRecord, hashAnomalyFinding, recordIdToBytes32, type HashableAnomalyFinding } from "../chain/hash";
+import {
+  anchorOnChain,
+  verifyOnChain,
+  findAnchorTxHash,
+  anchorAnomalyFindingOnChain,
+  getAnomalyFindingsOnChain,
+} from "../chain/anchorRegistry";
 import { asyncHandler } from "../middleware/asyncHandler";
 import { authenticate, requireRole } from "../middleware/auth";
 import { validate } from "../middleware/validate";
-import { evaluateAnomalies } from "../anomaly/rules";
+import { evaluateAnomalies, type Anomaly } from "../anomaly/rules";
+import { getReviewerBaseline, type ReviewerBaseline } from "../anomaly/baseline";
 
 export const recordsRouter = Router();
 
@@ -81,6 +88,50 @@ async function performAnchor(recordId: string) {
   });
 
   return withAnomalies(updated);
+}
+
+interface ReviewedRecord {
+  id: string;
+  submittedAt: Date | null;
+  reviewedAt: Date | null;
+  reviewedBy: string | null;
+}
+
+function buildAnomalyFinding(record: ReviewedRecord, anomaly: Anomaly, baseline: ReviewerBaseline): HashableAnomalyFinding {
+  return {
+    recordId: record.id,
+    anomalyId: anomaly.id,
+    reviewerEmail: record.reviewedBy!,
+    submittedAt: record.submittedAt!.toISOString(),
+    reviewedAt: record.reviewedAt!.toISOString(),
+    durationMs: record.reviewedAt!.getTime() - record.submittedAt!.getTime(),
+    baseline: baseline.sampleSize > 0 ? baseline : null,
+  };
+}
+
+/** Evaluates anomalies for a just-reviewed record against the reviewer's own baseline,
+ * and anchors any findings on-chain — anchoring the verdict itself, at the moment it's
+ * detected, so it can't be silently edited or suppressed later even with DB access.
+ * A failure here logs and continues rather than blocking the caller: the record's data
+ * hash (performAnchor) is the priority, and a missed finding can be re-derived and
+ * anchored later from the same (reproducible) reviewer history. */
+async function anchorAnomalyFindings(record: ReviewedRecord): Promise<void> {
+  if (!record.reviewedBy || !record.submittedAt || !record.reviewedAt) return;
+
+  const baseline = await getReviewerBaseline(prisma, record.reviewedBy, record.reviewedAt);
+  const anomalies = evaluateAnomalies(record, baseline);
+  if (anomalies.length === 0) return;
+
+  const recordIdBytes32 = recordIdToBytes32(record.id);
+
+  for (const anomaly of anomalies) {
+    try {
+      const findingHash = hashAnomalyFinding(buildAnomalyFinding(record, anomaly, baseline));
+      await anchorAnomalyFindingOnChain(recordIdBytes32, findingHash);
+    } catch (err) {
+      console.error(`Failed to anchor anomaly finding "${anomaly.id}" for record ${record.id}:`, err);
+    }
+  }
 }
 
 const DEFAULT_PAGE_SIZE = 20;
@@ -241,15 +292,18 @@ recordsRouter.post(
       return res.status(409).json({ error: `Cannot approve a record with status ${record.status}` });
     }
 
-    await prisma.$transaction(async (tx) => {
-      await tx.manufacturingRecord.update({
+    const reviewed = await prisma.$transaction(async (tx) => {
+      const reviewed = await tx.manufacturingRecord.update({
         where: { id: req.params.id },
         data: { status: "APPROVED", reviewedAt: new Date(), reviewedBy: req.user!.email, rejectionReason: null },
       });
       await tx.recordEvent.create({
         data: { recordId: record.id, stage: record.stage, type: "APPROVED", actor: req.user!.email },
       });
+      return reviewed;
     });
+
+    await anchorAnomalyFindings(reviewed);
 
     const anchored = await performAnchor(req.params.id);
     res.json(anchored);
@@ -298,6 +352,41 @@ recordsRouter.post(
 
     const updated = await performAnchor(req.params.id);
     res.json(updated);
+  })
+);
+
+/** Recomputes anomaly findings for a reviewed record (the reviewer's baseline is
+ * reproducible - see getReviewerBaseline) and cross-references each against what's
+ * anchored on-chain, so the UI can show not just "this was flagged" but "and that flag
+ * has been independently verifiable on-chain since <timestamp>". */
+recordsRouter.get(
+  "/:id/anomaly-findings",
+  asyncHandler(async (req, res) => {
+    const record = await prisma.manufacturingRecord.findUnique({ where: { id: req.params.id } });
+    if (!record) return res.status(404).json({ error: "Record not found" });
+
+    if (!record.reviewedBy || !record.submittedAt || !record.reviewedAt) {
+      return res.json({ recordId: record.id, findings: [] });
+    }
+
+    const baseline = await getReviewerBaseline(prisma, record.reviewedBy, record.reviewedAt);
+    const anomalies = evaluateAnomalies(record, baseline);
+
+    const recordIdBytes32 = recordIdToBytes32(record.id);
+    const onChainFindings = await getAnomalyFindingsOnChain(recordIdBytes32);
+
+    const findings = anomalies.map((anomaly) => {
+      const findingHash = hashAnomalyFinding(buildAnomalyFinding(record, anomaly, baseline));
+      const onChain = onChainFindings.find((f) => f.findingHash === findingHash);
+      return {
+        id: anomaly.id,
+        label: anomaly.label,
+        anchored: Boolean(onChain),
+        anchoredAt: onChain ? new Date(onChain.timestamp * 1000) : null,
+      };
+    });
+
+    res.json({ recordId: record.id, findings });
   })
 );
 

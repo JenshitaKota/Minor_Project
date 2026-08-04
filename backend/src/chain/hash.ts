@@ -37,3 +37,21 @@ export function hashRecord(record: HashableRecord): string {
 export function recordIdToBytes32(recordId: string): string {
   return keccak256(toUtf8Bytes(recordId));
 }
+
+export interface HashableAnomalyFinding {
+  recordId: string;
+  anomalyId: string;
+  reviewerEmail: string;
+  submittedAt: string;
+  reviewedAt: string;
+  durationMs: number;
+  baseline: { sampleSize: number; meanMs: number; stdDevMs: number } | null;
+}
+
+/** Everything that makes an anomaly finding independently reproducible: which record,
+ * which rule fired, who reviewed it, when, how long it took, and what baseline (if any)
+ * that verdict was judged against. Anchoring this hash - not just the anomaly id - means
+ * the specific reasoning behind the flag is tamper-evident too, not only its existence. */
+export function hashAnomalyFinding(finding: HashableAnomalyFinding): string {
+  return hashContent(finding);
+}
