@@ -11,15 +11,19 @@ import { RecordDetail } from "../components/RecordDetail";
 export default function Dashboard() {
   const { user, logout } = useAuth();
   const [batches, setBatches] = useState<BatchWithRecords[]>([]);
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
   const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
   const [selectedRecordId, setSelectedRecordId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  const loadBatches = useCallback(async () => {
+  const loadPage = useCallback(async (pageToLoad: number, { append }: { append: boolean }) => {
     try {
-      const summaries = await api.listBatches();
-      const detailed = await Promise.all(summaries.map((b) => api.getBatch(b.id)));
-      setBatches(detailed);
+      const { items, total: newTotal } = await api.listBatches(pageToLoad);
+      const detailed = await Promise.all(items.map((b) => api.getBatch(b.id)));
+      setBatches((prev) => (append ? [...prev, ...detailed] : detailed));
+      setPage(pageToLoad);
+      setTotal(newTotal);
       setLoadError(null);
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : "Failed to load batches");
@@ -27,19 +31,20 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    loadBatches();
-  }, [loadBatches]);
+    loadPage(1, { append: false });
+  }, [loadPage]);
 
   async function handleCreateBatch(batchNumber: string, product: string, plannedQuantity: number) {
     const batch = await api.createBatch(batchNumber, product, plannedQuantity);
-    await loadBatches();
+    await loadPage(1, { append: false });
     setSelectedBatchId(batch.id);
   }
 
   async function handleCreateRecord(stage: string, equipmentId: string | null, content: RecordContent) {
     if (!selectedBatchId) return;
     await api.createRecord(selectedBatchId, stage, equipmentId, content);
-    await loadBatches();
+    const refreshed = await api.getBatch(selectedBatchId);
+    setBatches((prev) => prev.map((b) => (b.id === refreshed.id ? refreshed : b)));
   }
 
   function handleRecordChanged(updated: ManufacturingRecord) {
@@ -95,6 +100,11 @@ export default function Dashboard() {
                 setSelectedRecordId(null);
               }}
             />
+            {batches.length < total && (
+              <button className="link-btn" onClick={() => loadPage(page + 1, { append: true })}>
+                Load more ({batches.length} of {total})
+              </button>
+            )}
           </div>
           {canCreateRecords && (
             <div className="panel">

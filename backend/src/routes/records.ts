@@ -63,16 +63,28 @@ async function performAnchor(recordId: string) {
   return withAnomalies(updated);
 }
 
+const DEFAULT_PAGE_SIZE = 20;
+const MAX_PAGE_SIZE = 100;
+
 recordsRouter.use(authenticate);
 
 recordsRouter.get(
   "/",
-  asyncHandler(async (_req, res) => {
-    const records = await prisma.manufacturingRecord.findMany({
-      orderBy: { createdAt: "desc" },
-      include: withRelations,
-    });
-    res.json(records.map(withAnomalies));
+  asyncHandler(async (req, res) => {
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, Number(req.query.pageSize) || DEFAULT_PAGE_SIZE));
+
+    const [records, total] = await Promise.all([
+      prisma.manufacturingRecord.findMany({
+        orderBy: { createdAt: "desc" },
+        include: withRelations,
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+      }),
+      prisma.manufacturingRecord.count(),
+    ]);
+
+    res.json({ items: records.map(withAnomalies), total, page, pageSize });
   })
 );
 

@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import type { User } from "../types";
-import { api, getToken, setToken } from "../api";
+import { api } from "../api";
 
 interface AuthContextValue {
   user: User | null;
@@ -16,26 +16,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!getToken()) {
-      setLoading(false);
-      return;
-    }
+    // Session lives in an httpOnly cookie, invisible to JS - ask the backend who we are.
     api
       .me()
       .then(setUser)
-      .catch(() => setToken(null))
+      .catch(() => setUser(null))
       .finally(() => setLoading(false));
   }, []);
 
   async function login(email: string, password: string) {
-    const { token, user } = await api.login(email, password);
-    setToken(token);
+    const { user } = await api.login(email, password);
     setUser(user);
   }
 
-  function logout() {
-    setToken(null);
-    setUser(null);
+  async function logout() {
+    try {
+      await api.logout();
+    } finally {
+      setUser(null);
+    }
   }
 
   return <AuthContext.Provider value={{ user, loading, login, logout }}>{children}</AuthContext.Provider>;

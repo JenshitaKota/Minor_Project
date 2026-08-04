@@ -1,35 +1,22 @@
 import type { AnalyticsSummary, Batch, Equipment, ManufacturingRecord, RecordContent, Role, User, VerifyResult } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:4000";
-const TOKEN_KEY = "pharmachain_token";
 
-export function getToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY);
-}
-
-export function setToken(token: string | null) {
-  if (token) localStorage.setItem(TOKEN_KEY, token);
-  else localStorage.removeItem(TOKEN_KEY);
-}
-
+// Auth is a backend-set httpOnly cookie (not readable/storable from JS - avoids XSS
+// token theft via localStorage). `credentials: "include"` sends and receives it.
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const token = getToken();
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
     ...options,
   });
 
   if (!res.ok) {
-    if (res.status === 401 && path !== "/auth/login") {
-      setToken(null);
-    }
     const body = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(body.error || `Request failed with status ${res.status}`);
   }
 
+  if (res.status === 204) return undefined as T;
   return res.json();
 }
 
@@ -53,12 +40,21 @@ export interface BatchWithRecords extends Batch {
   records: ManufacturingRecord[];
 }
 
+export interface Page<T> {
+  items: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
 export const api = {
   login: (email: string, password: string) =>
-    request<{ token: string; user: User }>("/auth/login", {
+    request<{ user: User }>("/auth/login", {
       method: "POST",
       body: JSON.stringify({ email, password }),
     }),
+
+  logout: () => request<void>("/auth/logout", { method: "POST" }),
 
   me: () => request<User>("/auth/me"),
 
@@ -70,7 +66,7 @@ export const api = {
       body: JSON.stringify({ email, password, name, role }),
     }),
 
-  listBatches: () => request<Batch[]>("/batches"),
+  listBatches: (page = 1, pageSize = 20) => request<Page<Batch>>(`/batches?page=${page}&pageSize=${pageSize}`),
 
   getBatch: (id: string) => request<BatchWithRecords>(`/batches/${id}`),
 

@@ -8,14 +8,26 @@ export const batchesRouter = Router();
 
 batchesRouter.use(authenticate);
 
+const DEFAULT_PAGE_SIZE = 20;
+const MAX_PAGE_SIZE = 100;
+
 batchesRouter.get(
   "/",
-  asyncHandler(async (_req, res) => {
-    const batches = await prisma.batch.findMany({
-      orderBy: { createdAt: "desc" },
-      include: { _count: { select: { records: true } } },
-    });
-    res.json(batches);
+  asyncHandler(async (req, res) => {
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, Number(req.query.pageSize) || DEFAULT_PAGE_SIZE));
+
+    const [batches, total] = await Promise.all([
+      prisma.batch.findMany({
+        orderBy: { createdAt: "desc" },
+        include: { _count: { select: { records: true } } },
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+      }),
+      prisma.batch.count(),
+    ]);
+
+    res.json({ items: batches, total, page, pageSize });
   })
 );
 

@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import cookieParser from "cookie-parser";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 
@@ -17,8 +18,11 @@ export const app = express();
 const corsOrigin = process.env.CORS_ORIGIN?.split(",").map((origin) => origin.trim());
 
 app.use(helmet());
-app.use(cors(corsOrigin ? { origin: corsOrigin } : undefined));
+// credentials: true (for the httpOnly auth cookie) forbids a wildcard origin, so with no
+// CORS_ORIGIN configured we reflect the request's own Origin back rather than using '*'.
+app.use(cors({ origin: corsOrigin ?? true, credentials: true }));
 app.use(express.json());
+app.use(cookieParser());
 
 app.get("/health", (_req, res) => {
   res.json({ status: "ok", service: "pharma-integrity-backend" });

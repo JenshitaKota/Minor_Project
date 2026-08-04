@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  contracts:
+    name: Contracts (Foundry)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Run Foundry tests
+        working-directory: contracts
+        run: forge test -vv
+
+  backend:
+    name: Backend (Vitest + local chain)
+    runs-on: ubuntu-latest
+    env:
+      JWT_SECRET: ci_test_secret
+      RPC_URL: http://127.0.0.1:8545
+      # Deterministic address for the first contract deployed by Hardhat's default
+      # account #0 on a fresh local node - matches contracts/scripts/deploy.ts.
+      CONTRACT_ADDRESS: "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+      ANCHOR_SIGNER_PRIVATE_KEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install contracts dependencies
+        working-directory: contracts
+        run: npm ci
+
+      - name: Start local Hardhat node
+        working-directory: contracts
+        run: |
+          nohup npx hardhat node > hardhat-node.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -s -o /dev/null -X POST http://127.0.0.1:8545 \
+              -H "Content-Type: application/json" \
+              -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'; then
+              echo "Hardhat node is up"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Hardhat node failed to start"
+          cat hardhat-node.log
+          exit 1
+
+      - name: Deploy AnchorRegistry
+        working-directory: contracts
+        run: npm run deploy:local
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Run backend tests
+        working-directory: backend
+        run: npm test

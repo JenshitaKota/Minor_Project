@@ -7,6 +7,18 @@ import { authenticate } from "../middleware/auth";
 
 export const authRouter = Router();
 
+const TOKEN_COOKIE_MAX_AGE_MS = 8 * 60 * 60 * 1000;
+
+function setTokenCookie(res: import("express").Response, token: string) {
+  res.cookie("token", token, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    maxAge: TOKEN_COOKIE_MAX_AGE_MS,
+    path: "/",
+  });
+}
+
 authRouter.post(
   "/login",
   asyncHandler(async (req, res) => {
@@ -21,12 +33,18 @@ authRouter.post(
     }
 
     const token = signToken({ userId: user.id, email: user.email, role: user.role });
+    setTokenCookie(res, token);
     res.json({
       token,
       user: { id: user.id, email: user.email, name: user.name, role: user.role },
     });
   })
 );
+
+authRouter.post("/logout", (_req, res) => {
+  res.clearCookie("token", { path: "/" });
+  res.status(204).end();
+});
 
 authRouter.get(
   "/me",
