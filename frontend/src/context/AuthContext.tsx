@@ -32,9 +32,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   async function logout() {
     try {
       await api.logout();
-    } finally {
-      setUser(null);
+    } catch {
+      // The user is signed out locally below regardless of whether the network
+      // call itself succeeded - a failed request here shouldn't strand them.
     }
+    setUser(null);
   }
 
   return <AuthContext.Provider value={{ user, loading, login, logout }}>{children}</AuthContext.Provider>;
