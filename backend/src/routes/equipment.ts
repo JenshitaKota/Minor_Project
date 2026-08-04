@@ -1,9 +1,21 @@
 import { Router } from "express";
+import { z } from "zod";
 import { prisma } from "../db/client";
 import { asyncHandler } from "../middleware/asyncHandler";
 import { authenticate, requireRole } from "../middleware/auth";
+import { validate } from "../middleware/validate";
 
 export const equipmentRouter = Router();
+
+const createEquipmentSchema = z.object({
+  code: z.string().min(1, "code is required"),
+  name: z.string().min(1, "name is required"),
+  type: z.string().min(1, "type is required"),
+});
+
+const updateStatusSchema = z.object({
+  status: z.enum(["ACTIVE", "MAINTENANCE", "RETIRED"]),
+});
 
 equipmentRouter.use(authenticate);
 
@@ -18,11 +30,9 @@ equipmentRouter.get(
 equipmentRouter.post(
   "/",
   requireRole("OPERATOR", "ADMIN"),
+  validate(createEquipmentSchema),
   asyncHandler(async (req, res) => {
     const { code, name, type } = req.body;
-    if (!code || !name || !type) {
-      return res.status(400).json({ error: "code, name and type are required" });
-    }
 
     const equipment = await prisma.equipment.create({ data: { code, name, type } });
     res.status(201).json(equipment);
@@ -32,11 +42,9 @@ equipmentRouter.post(
 equipmentRouter.patch(
   "/:id/status",
   requireRole("OPERATOR", "ADMIN"),
+  validate(updateStatusSchema),
   asyncHandler(async (req, res) => {
     const { status } = req.body;
-    if (!["ACTIVE", "MAINTENANCE", "RETIRED"].includes(status)) {
-      return res.status(400).json({ error: "status must be ACTIVE, MAINTENANCE or RETIRED" });
-    }
 
     const equipment = await prisma.equipment.update({
       where: { id: req.params.id },

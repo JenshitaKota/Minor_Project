@@ -1,11 +1,18 @@
 import { Router } from "express";
+import { z } from "zod";
 import { prisma } from "../db/client";
 import { comparePassword } from "../auth/password";
 import { signToken } from "../auth/jwt";
 import { asyncHandler } from "../middleware/asyncHandler";
 import { authenticate } from "../middleware/auth";
+import { validate } from "../middleware/validate";
 
 export const authRouter = Router();
+
+const loginSchema = z.object({
+  email: z.string().min(1, "email is required"),
+  password: z.string().min(1, "password is required"),
+});
 
 const TOKEN_COOKIE_MAX_AGE_MS = 8 * 60 * 60 * 1000;
 
@@ -21,11 +28,9 @@ function setTokenCookie(res: import("express").Response, token: string) {
 
 authRouter.post(
   "/login",
+  validate(loginSchema),
   asyncHandler(async (req, res) => {
     const { email, password } = req.body;
-    if (!email || !password) {
-      return res.status(400).json({ error: "email and password are required" });
-    }
 
     const user = await prisma.user.findUnique({ where: { email } });
     if (!user || !(await comparePassword(password, user.passwordHash))) {

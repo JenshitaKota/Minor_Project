@@ -1,7 +1,9 @@
 import { Router } from "express";
+import { z } from "zod";
 import { prisma } from "../db/client";
 import { asyncHandler } from "../middleware/asyncHandler";
 import { authenticate, requireRole } from "../middleware/auth";
+import { validate } from "../middleware/validate";
 import { evaluateAnomalies } from "../anomaly/rules";
 
 export const batchesRouter = Router();
@@ -10,6 +12,12 @@ batchesRouter.use(authenticate);
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
+
+const createBatchSchema = z.object({
+  batchNumber: z.string().min(1, "batchNumber is required"),
+  product: z.string().min(1, "product is required"),
+  plannedQuantity: z.coerce.number().positive("plannedQuantity must be a positive number"),
+});
 
 batchesRouter.get(
   "/",
@@ -34,14 +42,12 @@ batchesRouter.get(
 batchesRouter.post(
   "/",
   requireRole("OPERATOR", "ADMIN"),
+  validate(createBatchSchema),
   asyncHandler(async (req, res) => {
     const { batchNumber, product, plannedQuantity } = req.body;
-    if (!batchNumber || !product || !plannedQuantity) {
-      return res.status(400).json({ error: "batchNumber, product and plannedQuantity are required" });
-    }
 
     const batch = await prisma.batch.create({
-      data: { batchNumber, product, plannedQuantity: Number(plannedQuantity) },
+      data: { batchNumber, product, plannedQuantity },
     });
     res.status(201).json(batch);
   })

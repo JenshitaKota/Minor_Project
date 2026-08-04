@@ -1,10 +1,19 @@
 import { Router } from "express";
+import { z } from "zod";
 import { prisma } from "../db/client";
 import { hashPassword } from "../auth/password";
 import { asyncHandler } from "../middleware/asyncHandler";
 import { authenticate, requireRole } from "../middleware/auth";
+import { validate } from "../middleware/validate";
 
 export const usersRouter = Router();
+
+const createUserSchema = z.object({
+  email: z.email("must be a valid email"),
+  password: z.string().min(1, "password is required"),
+  name: z.string().min(1, "name is required"),
+  role: z.enum(["ADMIN", "OPERATOR", "QA_MANAGER", "AUDITOR"]),
+});
 
 usersRouter.use(authenticate, requireRole("ADMIN"));
 
@@ -21,11 +30,9 @@ usersRouter.get(
 
 usersRouter.post(
   "/",
+  validate(createUserSchema),
   asyncHandler(async (req, res) => {
     const { email, password, name, role } = req.body;
-    if (!email || !password || !name || !role) {
-      return res.status(400).json({ error: "email, password, name and role are required" });
-    }
 
     const passwordHash = await hashPassword(password);
     const user = await prisma.user.create({

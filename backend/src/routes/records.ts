@@ -1,14 +1,34 @@
 import { Router } from "express";
+import { z } from "zod";
 import { prisma } from "../db/client";
 import { hashRecord, recordIdToBytes32 } from "../chain/hash";
 import { anchorOnChain, verifyOnChain, findAnchorTxHash } from "../chain/anchorRegistry";
 import { asyncHandler } from "../middleware/asyncHandler";
 import { authenticate, requireRole } from "../middleware/auth";
+import { validate } from "../middleware/validate";
 import { evaluateAnomalies } from "../anomaly/rules";
 
 export const recordsRouter = Router();
 
 const withRelations = { batch: true, equipment: true } as const;
+
+const contentSchema = z.record(z.string(), z.union([z.string(), z.number()]));
+
+const createRecordSchema = z.object({
+  batchId: z.string().min(1, "batchId is required"),
+  stage: z.string().min(1, "stage is required"),
+  equipmentId: z.string().nullish(),
+  content: contentSchema,
+});
+
+const editRecordSchema = z.object({
+  content: contentSchema,
+  equipmentId: z.string().nullish(),
+});
+
+const rejectSchema = z.object({
+  reason: z.string().min(1, "reason is required"),
+});
 
 function withAnomalies<T extends { submittedAt: Date | null; reviewedAt: Date | null }>(record: T) {
   return { ...record, anomalies: evaluateAnomalies(record) };
@@ -91,11 +111,9 @@ recordsRouter.get(
 recordsRouter.post(
   "/",
   requireRole("OPERATOR", "ADMIN"),
+  validate(createRecordSchema),
   asyncHandler(async (req, res) => {
     const { batchId, stage, equipmentId, content } = req.body;
-    if (!batchId || !stage || typeof content !== "object" || content === null) {
-      return res.status(400).json({ error: "batchId, stage and content are required" });
-    }
 
     if (equipmentId) {
       const equipment = await prisma.equipment.findUnique({ where: { id: equipmentId } });
@@ -148,6 +166,7 @@ recordsRouter.get(
 recordsRouter.patch(
   "/:id",
   requireRole("OPERATOR", "ADMIN"),
+  validate(editRecordSchema),
   asyncHandler(async (req, res) => {
     const record = await prisma.manufacturingRecord.findUnique({ where: { id: req.params.id } });
     if (!record) return res.status(404).json({ error: "Record not found" });
@@ -156,9 +175,6 @@ recordsRouter.patch(
     }
 
     const { content, equipmentId } = req.body;
-    if (typeof content !== "object" || content === null) {
-      return res.status(400).json({ error: "content is required" });
-    }
 
     // ANCHORED stays ANCHORED - a direct DB edit after anchoring doesn't announce itself
     // by resetting the workflow status; that's exactly the scenario this platform exists
@@ -243,6 +259,7 @@ recordsRouter.post(
 recordsRouter.post(
   "/:id/reject",
   requireRole("QA_MANAGER", "ADMIN"),
+  validate(rejectSchema),
   asyncHandler(async (req, res) => {
     const record = await prisma.manufacturingRecord.findUnique({ where: { id: req.params.id } });
     if (!record) return res.status(404).json({ error: "Record not found" });
@@ -251,7 +268,6 @@ recordsRouter.post(
     }
 
     const { reason } = req.body;
-    if (!reason) return res.status(400).json({ error: "reason is required" });
 
     const updated = await prisma.$transaction(async (tx) => {
       const updated = await tx.manufacturingRecord.update({
