@@ -560,6 +560,11 @@ input, textarea {
   color: var(--color-danger);
 }
 
+.pill-warning {
+  background: var(--color-warning-bg);
+  color: var(--color-warning);
+}
+
 .pill-neutral {
   background: #24305c;
   color: #9aa5c3;

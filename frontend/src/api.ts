@@ -84,6 +84,12 @@ export const api = {
       body: JSON.stringify({ code, name, type }),
     }),
 
+  updateEquipmentStatus: (id: string, status: Equipment["status"]) =>
+    request<Equipment>(`/equipment/${id}/status`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    }),
+
   createRecord: (batchId: string, stage: string, equipmentId: string | null, content: RecordContent) =>
     request<ManufacturingRecord>("/records", {
       method: "POST",
