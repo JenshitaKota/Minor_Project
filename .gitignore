@@ -1,0 +1,31 @@
+node_modules/
+dist/
+build/
+.env
+.env.local
+
+# frontend
+frontend/node_modules/
+frontend/dist/
+
+# contracts (Hardhat + Foundry)
+contracts/node_modules/
+contracts/artifacts/
+contracts/cache/
+contracts/cache_forge/
+contracts/out/
+contracts/typechain-types/
+
+# backend
+backend/.pgdata/
+backend/.pgdata-test/
+backend/test/runtime.json
+backend/src/generated/
+backend/.claude/
+backend/.windsurf/
+backend/.agents/
+backend/skills-lock.json
+
+# OS
+.DS_Store
+Thumbs.db

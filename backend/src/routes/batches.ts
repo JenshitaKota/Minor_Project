@@ -1,0 +1,56 @@
+import { Router } from "express";
+import { prisma } from "../db/client";
+import { asyncHandler } from "../middleware/asyncHandler";
+import { authenticate, requireRole } from "../middleware/auth";
+import { evaluateAnomalies } from "../anomaly/rules";
+
+export const batchesRouter = Router();
+
+batchesRouter.use(authenticate);
+
+batchesRouter.get(
+  "/",
+  asyncHandler(async (_req, res) => {
+    const batches = await prisma.batch.findMany({
+      orderBy: { createdAt: "desc" },
+      include: { _count: { select: { records: true } } },
+    });
+    res.json(batches);
+  })
+);
+
+batchesRouter.post(
+  "/",
+  requireRole("OPERATOR", "ADMIN"),
+  asyncHandler(async (req, res) => {
+    const { batchNumber, product, plannedQuantity } = req.body;
+    if (!batchNumber || !product || !plannedQuantity) {
+      return res.status(400).json({ error: "batchNumber, product and plannedQuantity are required" });
+    }
+
+    const batch = await prisma.batch.create({
+      data: { batchNumber, product, plannedQuantity: Number(plannedQuantity) },
+    });
+    res.status(201).json(batch);
+  })
+);
+
+batchesRouter.get(
+  "/:id",
+  asyncHandler(async (req, res) => {
+    const batch = await prisma.batch.findUnique({
+      where: { id: req.params.id },
+      include: {
+        records: {
+          orderBy: { createdAt: "asc" },
+          include: { equipment: true, events: { orderBy: { createdAt: "asc" } } },
+        },
+      },
+    });
+    if (!batch) return res.status(404).json({ error: "Batch not found" });
+    res.json({
+      ...batch,
+      records: batch.records.map((record) => ({ ...record, anomalies: evaluateAnomalies(record) })),
+    });
+  })
+);

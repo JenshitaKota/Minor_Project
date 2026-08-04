@@ -1,0 +1,117 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum RecordStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  ANCHORED
+  REJECTED
+}
+
+enum Role {
+  ADMIN
+  OPERATOR
+  QA_MANAGER
+  AUDITOR
+}
+
+enum EquipmentStatus {
+  ACTIVE
+  MAINTENANCE
+  RETIRED
+}
+
+enum RecordEventType {
+  CREATED
+  EDITED
+  REVISED
+  SUBMITTED
+  APPROVED
+  REJECTED
+  ANCHORED
+  MODIFIED_AFTER_ANCHOR
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         Role
+
+  createdAt    DateTime @default(now())
+}
+
+model Batch {
+  id              String   @id @default(uuid())
+  batchNumber     String   @unique
+  product         String
+  plannedQuantity Int
+
+  createdAt       DateTime @default(now())
+
+  records         ManufacturingRecord[]
+}
+
+model Equipment {
+  id     String          @id @default(uuid())
+  code   String          @unique
+  name   String
+  type   String
+  status EquipmentStatus @default(ACTIVE)
+
+  records ManufacturingRecord[]
+}
+
+model ManufacturingRecord {
+  id          String       @id @default(uuid())
+  batch       Batch        @relation(fields: [batchId], references: [id])
+  batchId     String
+  equipment   Equipment?   @relation(fields: [equipmentId], references: [id])
+  equipmentId String?
+  stage       String
+  content     Json
+  status      RecordStatus @default(DRAFT)
+
+  contentHash      String?
+  anchoredSnapshot Json?
+  anchoredTxHash   String?
+  anchoredAt       DateTime?
+
+  submittedAt      DateTime?
+  reviewedAt       DateTime?
+  reviewedBy       String?
+  rejectionReason  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  events RecordEvent[]
+
+  @@index([batchId])
+  @@index([equipmentId])
+}
+
+/// One immutable row per state transition. Unlike ManufacturingRecord's own
+/// submittedAt/reviewedAt fields (which hold only the *current* review), this is the
+/// permanent history: a record rejected, revised, and later approved keeps every step.
+model RecordEvent {
+  id       String          @id @default(uuid())
+  record   ManufacturingRecord @relation(fields: [recordId], references: [id])
+  recordId String
+  stage    String
+  type     RecordEventType
+  actor    String?
+  detail   String?
+
+  createdAt DateTime @default(now())
+
+  @@index([recordId])
+}
