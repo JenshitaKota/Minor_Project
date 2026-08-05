@@ -2,9 +2,9 @@
 
 **Status:** Draft technical disclosure for submission to a university technology-transfer office and/or a patent attorney. This document is not legal advice and does not constitute a filed patent application. It is written to give a patent professional the technical substance needed to run a formal prior-art search and draft claims.
 
-**Prepared:** 2026-08-04
+**Prepared:** 2026-08-04 (revised 2026-08-05)
 **System name (working title):** PharmaChain Integrity
-**Reduction to practice:** Working implementation, tested end-to-end (contract, backend, frontend), in the project repository. Primary implementing commit: `b0b3a5bf0da8269b6b642d12b314167ce061cb24` ("Anchor anomaly findings on-chain, baselined per-reviewer"), 2026-08-04.
+**Reduction to practice:** Working implementation, tested end-to-end (contract, backend, frontend), in the project repository. Implementing commits: `b0b3a5bf0da8269b6b642d12b314167ce061cb24` ("Anchor anomaly findings on-chain, baselined per-reviewer"), 2026-08-04, and `2a22170637668ee3739e7e11cf195c46e38bcb30` ("Require independent multi-party co-signature for every anchor"), 2026-08-05, which added the multi-party attestation mechanism described in §4.6.
 
 ---
 
@@ -26,7 +26,7 @@ Separately, existing anomaly/fraud-detection approaches for approval timing (bro
 
 ## 3. Summary of the Invention
 
-The invention combines, in a single system, three elements that are individually known in isolated form but not, to the inventors' knowledge, combined in this way for this problem:
+The invention combines, in a single system, four elements that are individually known in isolated form but not, to the inventors' knowledge, combined in this way for this problem:
 
 **(a)** Anchoring of manufacturing-record content hashes on a blockchain smart contract, keyed by record identifier, with revert-on-reanchor protection (known technique, prior art exists).
 
@@ -34,7 +34,9 @@ The invention combines, in a single system, three elements that are individually
 
 **(c)** Anchoring the resulting anomaly *verdict* — not merely the record's content hash — on the same blockchain smart contract, as its own immutable event, at the moment of detection (i.e., at approval time), cryptographically derived from a canonical hash of the finding's full reasoning (which rule fired, the reviewer, the timestamps, the duration, and the baseline statistics used to reach the verdict). This produces a chain of evidence binding **what the data says** (content-hash anchor) and **how it was reviewed** (anomaly-finding anchor) into one tamper-evident system, in one contract, such that neither can be altered or suppressed without an on-chain, publicly-auditable trace — including by a party with full administrative access to the underlying database.
 
-This combination directly addresses a gap that exists in both the chain-of-custody category and the data-hash-anchoring category of prior art: neither anchors a *process-integrity* verdict, and neither uses individualized statistical baselining fused with immutable anchoring of the verdict itself.
+**(d)** Requiring **two independent attestors** — not a single authority — to jointly confirm every anchor operation via an on-chain propose/co-sign pattern, with the smart contract itself enforcing that the co-signer is not the same party who proposed. This removes the single point of trust that would otherwise undermine (a)–(c): without it, whoever controls the one anchoring key could unilaterally withhold an anchor, or the underlying backend could collude with whoever altered the data, defeating the purpose of anchoring anything at all (see §4.6).
+
+This combination directly addresses a gap that exists in both the chain-of-custody category and the data-hash-anchoring category of prior art: neither anchors a *process-integrity* verdict, neither uses individualized statistical baselining fused with immutable anchoring of the verdict itself, and neither requires independent multi-party confirmation of the anchor operation itself (MediLedger's multi-organization consensus operates at the network/ledger level between organizations, not as an explicit propose/co-sign requirement enforced per anchoring transaction within a single smart contract).
 
 ## 4. Detailed Description
 
@@ -78,6 +80,20 @@ A read endpoint recomputes the current, reproducible finding (per §4.3's time-b
 
 A reviewer with a historical mean approval time of 30 minutes and a standard deviation of 2 minutes (sample size ≥ 5) approves a new record in 25 minutes. This is far outside any fixed global threshold (e.g., "flag anything under 60 seconds") and would not be flagged by a conventional fixed-threshold system. Under the disclosed method, `z = (25×60000 − 30×60000) / (2×60000) = −2.5`, which is below the `−1.5` threshold, and the approval is correctly flagged as anomalous *for that specific reviewer* — demonstrating detection of a class of anomaly that fixed-threshold systems cannot express.
 
+### 4.6 Multi-Party Attestation for Every Anchor Operation (novel element)
+
+Sections 4.2–4.4 describe *what* gets anchored (content hash, anomaly findings) but not *who* is trusted to anchor it. In the initial reduction to practice, a single `Ownable` owner key held that authority exclusively — meaning whoever controlled that one key (or the backend process holding it) could unilaterally decide what got anchored, or refuse to anchor a record that should show tampering, with no independent check. This directly undercuts the value of §4.2–4.4: an immutable ledger is only as trustworthy as the process that writes to it.
+
+`AnchorRegistry.sol` replaces the single `onlyOwner` anchor call with a two-step, two-party protocol:
+
+- `proposeAnchor(recordId, contentHash, findingHashes)` — callable only by a registered **attestor** (`isAttestor[msg.sender]`), stores a `PendingAnchor{contentHash, findingHashes, proposedBy, proposedAt}`. This does not anchor anything; it records an intent.
+- `coSignAnchor(recordId, contentHash, findingHashes)` — callable only by a registered attestor, requires the resupplied `contentHash`/`findingHashes` to exactly match the pending proposal (the co-signer is independently confirming the specific package, not blindly trusting it), and **requires `msg.sender != pending.proposedBy`** — the core guarantee. Only on success does the content hash and every bundled anomaly finding become permanently anchored, atomically, in one transaction.
+- Attestor set membership (`addAttestor`/`removeAttestor`) remains owner-governed — a materially smaller trust surface than the owner directly controlling every anchoring decision, and flagged in §7 as a further-reducible surface (e.g., via decentralized attestor-set governance).
+
+In the reference deployment, this maps directly onto the application's existing role model rather than an invented abstraction: a QA reviewer's approval action calls `proposeAnchor` (via a `QA_ATTESTOR` key), and a **different**, independent **Auditor**'s review action calls `coSignAnchor` (via a separate `AUDITOR_ATTESTOR` key) — the application layer additionally enforces that the same *individual human* (by identity, not just by role-key) cannot occupy both positions for the same record, even where a single role (e.g., an administrative override role) is technically permitted to invoke either endpoint.
+
+**Honest scope limitation, stated directly:** in the current reference deployment, both attestor private keys are configured on the same backend process. The guarantee actually provided today is *"two distinct cryptographic signatures, from two distinct keys, are required to anchor anything"* — which already defeats a single-key compromise and enforces application-level separation of duties — but not yet *"two independently operated systems, outside either party's unilateral control, are required."* A fully compromised backend process still holds both keys. Realizing the stronger guarantee is an operational deployment change, not a protocol change: the Auditor's key should be held and operated by a system outside the manufacturer's control (e.g., an independent audit service authenticating its own operator), a change the propose/co-sign contract interface already supports without modification.
+
 ## 5. Novel Aspects vs. Identified Prior Art
 
 | | MediLedger (custody chain) | Academic data-hash anchoring (2023) | Generic "blockchain audit trail" products | Generic UEBA / behavioral fraud detection | **This disclosure** |
@@ -88,6 +104,7 @@ A reviewer with a historical mean approval time of 30 minutes and a standard dev
 | Baseline is time-bounded for permanent reproducibility | N/A | N/A | N/A | Not typically a design concern | **Yes** |
 | Data integrity and process integrity bound in one evidentiary chain | No | No | No | No | **Yes** |
 | Applied to GxP pharmaceutical manufacturing review workflow specifically | Partially (supply chain, not manufacturing review) | Partially (sensor data, not review behavior) | No | No | **Yes** |
+| Every anchor requires two independent attestors, enforced on-chain (proposer ≠ co-signer) | No (multi-org consensus at network level, not per-transaction) | No (single anchoring key) | No | No | **Yes** |
 
 No single row above is independently novel; the disclosed **combination**, applied to this specific problem, is the claimed contribution.
 
@@ -104,6 +121,8 @@ A computer-implemented system for verifying the integrity of regulated manufactu
 - Wherein the cryptographic hash of the anomaly determination is computed over a canonical representation including the record identifier, the reviewing party's identity, the review and submission timestamps, the computed duration, and the statistical baseline values.
 - Wherein the content hash and the anomaly-determination hash are stored by the same smart contract.
 - Wherein the smart contract reverts an attempt to anchor an anomaly-determination hash identical to one already stored for the same record identifier.
+- Wherein the smart contract requires a first party to propose the content hash and anomaly-determination hash as a package, and a second, distinct party to independently confirm the identical package before either is permanently stored, the contract rejecting confirmation by the same party that proposed it.
+- Wherein confirmation requires the second party to resupply the content hash and anomaly-determination hash, the contract rejecting confirmation if the resupplied values do not exactly match the proposed package.
 
 ## 7. Alternative / Contemplated Embodiments (not yet implemented)
 
@@ -112,13 +131,17 @@ For claim-breadth purposes, the following are contemplated extensions consistent
 - **Zero-knowledge proof verification**: a public party could verify "this record's data is unmodified and its review process passed integrity checks" without the system revealing the underlying manufacturing content (formulas, quantities, supplier identities) — addressing a limitation shared by both the custody-chain and data-hash-anchoring prior art, neither of which supports privacy-preserving public verification.
 - **Equipment-state anchoring**: extending the same anchoring mechanism to equipment calibration/maintenance state transitions, so that "was equipment X properly calibrated and active at the time record Y was created" becomes a cryptographically provable fact linked to the record's anchor, rather than a separately-trusted database field.
 - **Additional behavioral baseline dimensions**: per-reviewer baselining of other decision attributes (e.g., rejection rate, time-of-day pattern) beyond approval duration, using the same time-bounded reproducibility principle.
+- **Independently-operated attestor keys**: operating the two attestor keys described in §4.6 on genuinely separate systems (e.g., the Auditor's key held by a system outside the manufacturer's control, gated by that Auditor's own authentication) rather than both being configured on one backend process, closing the residual scope limitation noted in §4.6.
+- **Decentralized attestor-set governance**: replacing the owner-controlled `addAttestor`/`removeAttestor` functions (§4.6) with a voting or multi-signature governance mechanism, removing the one remaining centralized control point (who may attest, as opposed to what gets anchored).
+- **M-of-N attestation**: generalizing the two-party propose/co-sign protocol to require confirmation from M of N registered attestors for M, N > 2, for deployments involving more than two independent parties (e.g., manufacturer, auditor, and regulator).
 
 ## 8. Evidence of Reduction to Practice
 
-- Repository commit `b0b3a5bf0da8269b6b642d12b314167ce061cb24`, dated 2026-08-04, implements the full system described in §4: `contracts/contracts/AnchorRegistry.sol` (smart contract), `backend/src/anomaly/baseline.ts` (statistical baseline), `backend/src/anomaly/rules.ts` (baseline-aware anomaly evaluation), `backend/src/routes/records.ts` (approval-flow wiring and read endpoint), `frontend/src/components/RecordDetail.tsx` (verification UI).
-- Automated test coverage: 18 Foundry contract tests, 31 backend tests (including an end-to-end integration test exercising the full approve → on-chain-anchor → verify path), 24 frontend tests.
-- Manually verified end-to-end against a running local blockchain node and database: a review decision was made, flagged as anomalous under both the fixed-threshold and (separately, in unit tests) the statistical-baseline paths, anchored on-chain, and independently re-verified via the read endpoint and UI.
-- A genuine implementation defect (a transaction-nonce race when anchoring two findings from the same signer in quick succession under automining) was discovered and fixed (`ethers.NonceManager`) during this verification process — documented in the same commit, indicating the system was tested against real execution conditions, not only unit-level logic.
+- Repository commit `b0b3a5bf0da8269b6b642d12b314167ce061cb24`, dated 2026-08-04, implements the system described in §4.1–4.5: `contracts/contracts/AnchorRegistry.sol` (smart contract), `backend/src/anomaly/baseline.ts` (statistical baseline), `backend/src/anomaly/rules.ts` (baseline-aware anomaly evaluation), `backend/src/routes/records.ts` (approval-flow wiring and read endpoint), `frontend/src/components/RecordDetail.tsx` (verification UI).
+- Repository commit `2a22170637668ee3739e7e11cf195c46e38bcb30`, dated 2026-08-05, implements the multi-party attestation mechanism described in §4.6: the propose/co-sign rewrite of `AnchorRegistry.sol`, the two-attestor-key backend wiring (`backend/src/chain/anchorRegistry.ts`), the `POST /records/:id/anchor-cosign` endpoint and updated approval flow (`backend/src/routes/records.ts`), and the pending-co-signature UI (`frontend/src/components/RecordDetail.tsx`).
+- Automated test coverage as of the second commit: 19 Foundry contract tests (including propose/co-sign success, same-attestor-rejection, mismatched-package-rejection, and non-attestor-rejection cases), 34 backend tests (including a full propose → blocked self-co-sign → independent co-sign → verify integration test), 28 frontend tests (including role-gated rendering of the pending-co-signature banner and co-sign action).
+- Manually verified end-to-end against a running local blockchain node and database, across all three layers: a review decision was proposed, blocked from self-co-signature (tested both as a role-gate rejection and, more meaningfully, as an Admin attempting to co-sign their own proposal), independently co-signed by a different Auditor account, and verified — driven through actual browser sessions for each role, not only API calls.
+- Two genuine implementation defects were discovered and fixed during this verification process, not merely anticipated in the abstract: (1) a transaction-nonce race when anchoring two findings from the same signer in quick succession under automining, fixed with `ethers.NonceManager`; (2) a cross-process nonce desynchronization between a long-running backend process and separate test-suite runs sharing the same attestor keys against the same chain, surfaced during this same verification pass and resolved operationally (restarting the affected process re-synchronizes its local nonce cache with on-chain state) — both indicating the system was exercised against real, not merely simulated, execution conditions.
 
 ## 9. Next Steps (for the recipient of this disclosure)
 
