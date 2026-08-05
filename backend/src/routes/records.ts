@@ -83,6 +83,28 @@ async function computeAnchorPackage(record: AnchorableRecord) {
   return { contentHash, snapshot, findingHashes };
 }
 
+/** Persists a chain-write failure as a durable, queryable RecordEvent instead of
+ * letting it vanish into a transient console.error (the errorHandler middleware still
+ * logs it too) - so a failed anchor attempt is visible in the record's own timeline
+ * to anyone looking, not only to someone watching server logs at the exact moment it
+ * happened. Swallows its own failure (falls back to console) rather than letting a
+ * logging problem mask the original error. */
+async function recordAnchorFailure(record: AnchorableRecord, step: "propose" | "co-sign", err: unknown) {
+  const message = err instanceof Error ? err.message : String(err);
+  await prisma.recordEvent
+    .create({
+      data: {
+        recordId: record.id,
+        stage: record.stage,
+        type: "ANCHOR_FAILED",
+        detail: `Failed to ${step} anchor: ${message.slice(0, 500)}`,
+      },
+    })
+    .catch((loggingErr) => {
+      console.error(`Failed to record ANCHOR_FAILED event for record ${record.id}:`, loggingErr);
+    });
+}
+
 /** Recovers a record whose co-sign actually succeeded on-chain but crashed before the
  * DB write landed - syncs straight to ANCHORED instead of re-proposing (which would
  * revert - the record is already anchored). */
@@ -122,36 +144,44 @@ async function proposeAnchor(recordId: string) {
   const record = await prisma.manufacturingRecord.findUniqueOrThrow({ where: { id: recordId } });
   const recordIdBytes32 = recordIdToBytes32(record.id);
 
-  const { anchored, matches, timestamp } = await verifyOnChain(recordIdBytes32, hashRecord(record));
-  if (anchored && matches) {
-    return syncAnchoredFromChain(record, timestamp);
-  }
+  // Everything from here on touches the chain (even the read calls can fail if the RPC
+  // endpoint is unreachable) - wrapping the whole sequence, not just the write, so a
+  // failure at any point still gets durably logged rather than only the write failures.
+  try {
+    const { anchored, matches, timestamp } = await verifyOnChain(recordIdBytes32, hashRecord(record));
+    if (anchored && matches) {
+      return await syncAnchoredFromChain(record, timestamp);
+    }
 
-  const pending = await getPendingAnchorOnChain(recordIdBytes32);
-  let proposedAt: number;
-  if (pending.proposedAt !== 0) {
-    // Already proposed on-chain (e.g. a crash before this DB write landed last time) -
-    // re-proposing would revert, so just sync the DB state instead.
-    proposedAt = pending.proposedAt;
-  } else {
-    const { contentHash, findingHashes } = await computeAnchorPackage(record);
-    const result = await proposeAnchorOnChain(recordIdBytes32, contentHash, findingHashes);
-    proposedAt = result.timestamp;
-  }
+    const pending = await getPendingAnchorOnChain(recordIdBytes32);
+    let proposedAt: number;
+    if (pending.proposedAt !== 0) {
+      // Already proposed on-chain (e.g. a crash before this DB write landed last time) -
+      // re-proposing would revert, so just sync the DB state instead.
+      proposedAt = pending.proposedAt;
+    } else {
+      const { contentHash, findingHashes } = await computeAnchorPackage(record);
+      const result = await proposeAnchorOnChain(recordIdBytes32, contentHash, findingHashes);
+      proposedAt = result.timestamp;
+    }
 
-  const updated = await prisma.$transaction(async (tx) => {
-    const updated = await tx.manufacturingRecord.update({
-      where: { id: record.id },
-      data: { anchorProposedAt: new Date(proposedAt * 1000), anchorProposedBy: record.reviewedBy },
-      include: withRelations,
+    const updated = await prisma.$transaction(async (tx) => {
+      const updated = await tx.manufacturingRecord.update({
+        where: { id: record.id },
+        data: { anchorProposedAt: new Date(proposedAt * 1000), anchorProposedBy: record.reviewedBy },
+        include: withRelations,
+      });
+      await tx.recordEvent.create({
+        data: { recordId: record.id, stage: record.stage, type: "ANCHOR_PROPOSED", actor: record.reviewedBy },
+      });
+      return updated;
     });
-    await tx.recordEvent.create({
-      data: { recordId: record.id, stage: record.stage, type: "ANCHOR_PROPOSED", actor: record.reviewedBy },
-    });
-    return updated;
-  });
 
-  return withAnomalies(updated);
+    return withAnomalies(updated);
+  } catch (err) {
+    await recordAnchorFailure(record, "propose", err);
+    throw err;
+  }
 }
 
 /** Independently confirms a pending anchor proposal, finalizing it on-chain (the
@@ -170,30 +200,35 @@ async function proposeAnchor(recordId: string) {
  * than this backend's. */
 async function coSignAnchor(record: AnchorableRecord, coSignedBy: string) {
   const recordIdBytes32 = recordIdToBytes32(record.id);
-  const { contentHash, snapshot, findingHashes } = await computeAnchorPackage(record);
 
-  const result = await coSignAnchorOnChain(recordIdBytes32, contentHash, findingHashes);
+  try {
+    const { contentHash, snapshot, findingHashes } = await computeAnchorPackage(record);
+    const result = await coSignAnchorOnChain(recordIdBytes32, contentHash, findingHashes);
 
-  const updated = await prisma.$transaction(async (tx) => {
-    const updated = await tx.manufacturingRecord.update({
-      where: { id: record.id },
-      data: {
-        status: "ANCHORED",
-        contentHash,
-        anchoredSnapshot: snapshot,
-        anchoredTxHash: result.txHash,
-        anchoredAt: new Date(result.timestamp * 1000),
-        anchorCoSignedBy: coSignedBy,
-      },
-      include: withRelations,
+    const updated = await prisma.$transaction(async (tx) => {
+      const updated = await tx.manufacturingRecord.update({
+        where: { id: record.id },
+        data: {
+          status: "ANCHORED",
+          contentHash,
+          anchoredSnapshot: snapshot,
+          anchoredTxHash: result.txHash,
+          anchoredAt: new Date(result.timestamp * 1000),
+          anchorCoSignedBy: coSignedBy,
+        },
+        include: withRelations,
+      });
+      await tx.recordEvent.create({
+        data: { recordId: record.id, stage: record.stage, type: "ANCHORED", actor: coSignedBy, detail: result.txHash },
+      });
+      return updated;
     });
-    await tx.recordEvent.create({
-      data: { recordId: record.id, stage: record.stage, type: "ANCHORED", actor: coSignedBy, detail: result.txHash },
-    });
-    return updated;
-  });
 
-  return withAnomalies(updated);
+    return withAnomalies(updated);
+  } catch (err) {
+    await recordAnchorFailure(record, "co-sign", err);
+    throw err;
+  }
 }
 
 const DEFAULT_PAGE_SIZE = 20;

@@ -10,22 +10,34 @@ interface AnomalyInput {
   reviewedAt: Date | null;
 }
 
+function envNumber(key: string, fallback: number): number {
+  const raw = process.env[key];
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+// These thresholds are reasonable starting defaults, not values validated against real
+// fraud data - there's no such dataset for a project at this stage. Each is overridable
+// via env var so they can be tuned (e.g. after real usage data exists) without a code
+// change, rather than being hardcoded magic numbers.
+
 // A genuine GMP review means actually reading the record - anything faster than this
 // reads as a rubber-stamp rather than a real review. Used until a reviewer has enough
 // history to be judged against their own baseline instead (see isFastApproval below).
-const FAST_APPROVAL_FALLBACK_THRESHOLD_MS = 60 * 1000;
+const FAST_APPROVAL_FALLBACK_THRESHOLD_MS = envNumber("ANOMALY_FAST_APPROVAL_FALLBACK_MS", 60 * 1000);
 
 // Below this many past reviews, a reviewer's mean/stddev is too noisy to baseline
 // against, so we fall back to the fixed threshold.
-const MIN_BASELINE_SAMPLE_SIZE = 5;
+const MIN_BASELINE_SAMPLE_SIZE = envNumber("ANOMALY_MIN_BASELINE_SAMPLE_SIZE", 5);
 
 // How many standard deviations below a reviewer's own average approval time counts as
 // "unusually fast for them" - e.g. someone who normally takes 20 minutes suddenly
 // deciding in 90 seconds, even though 90 seconds might be unremarkable for someone else.
-const FAST_APPROVAL_Z_SCORE_THRESHOLD = -1.5;
+const FAST_APPROVAL_Z_SCORE_THRESHOLD = envNumber("ANOMALY_FAST_APPROVAL_Z_SCORE_THRESHOLD", -1.5);
 
-const BUSINESS_HOUR_START = 8;
-const BUSINESS_HOUR_END = 18;
+const BUSINESS_HOUR_START = envNumber("ANOMALY_BUSINESS_HOUR_START", 8);
+const BUSINESS_HOUR_END = envNumber("ANOMALY_BUSINESS_HOUR_END", 18);
 
 function isFastApproval({ submittedAt, reviewedAt }: AnomalyInput, baseline?: ReviewerBaseline): boolean {
   if (!submittedAt || !reviewedAt) return false;

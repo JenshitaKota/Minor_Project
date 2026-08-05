@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, afterEach, vi } from "vitest";
 import { evaluateAnomalies } from "../src/anomaly/rules";
 import type { ReviewerBaseline } from "../src/anomaly/baseline";
 
@@ -101,6 +101,59 @@ describe("evaluateAnomalies", () => {
 
       const notFast = evaluateAnomalies({ submittedAt, reviewedAt: new Date(submittedAt.getTime() + 90 * 1000) }, baseline);
       expect(notFast).toEqual([]);
+    });
+  });
+
+  describe("threshold overrides via env vars", () => {
+    const originalEnv = { ...process.env };
+
+    afterEach(() => {
+      process.env = { ...originalEnv };
+      vi.resetModules();
+    });
+
+    it("respects ANOMALY_FAST_APPROVAL_FALLBACK_MS", async () => {
+      process.env.ANOMALY_FAST_APPROVAL_FALLBACK_MS = "5000";
+      vi.resetModules();
+      const { evaluateAnomalies: evaluateWithOverride } = await import("../src/anomaly/rules");
+
+      const submittedAt = MONDAY_10AM(0);
+      // 4s: under the overridden 5s threshold (would not trip the default 60s rule's
+      // "still fine" case at this duration either way, but specifically proves the
+      // override value - not the default - is what's being applied).
+      const fast = evaluateWithOverride({ submittedAt, reviewedAt: new Date(submittedAt.getTime() + 4000) });
+      expect(fast.map((a) => a.id)).toEqual(["fast-approval"]);
+
+      // 6s: over the overridden 5s threshold, so no longer flagged - even though it's
+      // still well under the *default* 60s threshold, proving the default isn't
+      // silently still in effect.
+      const notFast = evaluateWithOverride({ submittedAt, reviewedAt: new Date(submittedAt.getTime() + 6000) });
+      expect(notFast).toEqual([]);
+    });
+
+    it("respects ANOMALY_BUSINESS_HOUR_START and ANOMALY_BUSINESS_HOUR_END", async () => {
+      process.env.ANOMALY_BUSINESS_HOUR_START = "6";
+      process.env.ANOMALY_BUSINESS_HOUR_END = "22";
+      vi.resetModules();
+      const { evaluateAnomalies: evaluateWithOverride } = await import("../src/anomaly/rules");
+
+      // 7am: off-hours under the default (starts at 8) but within hours under the
+      // override (starts at 6).
+      const reviewedAt = new Date(2026, 0, 5, 7, 0, 0);
+      const submittedAt = new Date(reviewedAt.getTime() - 5 * 60 * 1000);
+      expect(evaluateWithOverride({ submittedAt, reviewedAt })).toEqual([]);
+    });
+
+    it("falls back to the default when the env var is unset or invalid", async () => {
+      process.env.ANOMALY_FAST_APPROVAL_FALLBACK_MS = "not-a-number";
+      vi.resetModules();
+      const { evaluateAnomalies: evaluateWithInvalidOverride } = await import("../src/anomaly/rules");
+
+      const submittedAt = MONDAY_10AM(0);
+      const reviewedAt = new Date(submittedAt.getTime() + 30 * 1000);
+      // Still uses the 60s default despite the garbage env value, rather than crashing
+      // or silently treating everything as anomalous.
+      expect(evaluateWithInvalidOverride({ submittedAt, reviewedAt }).map((a) => a.id)).toEqual(["fast-approval"]);
     });
   });
 });

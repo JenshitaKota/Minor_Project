@@ -49,6 +49,8 @@ export type RecordEventType =
   | "SUBMITTED"
   | "APPROVED"
   | "REJECTED"
+  | "ANCHOR_PROPOSED"
+  | "ANCHOR_FAILED"
   | "ANCHORED"
   | "MODIFIED_AFTER_ANCHOR";
 

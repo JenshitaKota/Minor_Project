@@ -755,7 +755,8 @@ input, textarea {
 }
 
 .timeline-REVISED .timeline-dot,
-.timeline-SUBMITTED .timeline-dot {
+.timeline-SUBMITTED .timeline-dot,
+.timeline-ANCHOR_PROPOSED .timeline-dot {
   background: var(--color-primary);
 }
 
@@ -765,7 +766,8 @@ input, textarea {
 }
 
 .timeline-REJECTED .timeline-dot,
-.timeline-MODIFIED_AFTER_ANCHOR .timeline-dot {
+.timeline-MODIFIED_AFTER_ANCHOR .timeline-dot,
+.timeline-ANCHOR_FAILED .timeline-dot {
   background: var(--color-danger);
 }
 

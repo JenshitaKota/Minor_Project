@@ -8,6 +8,8 @@ const EVENT_LABELS: Record<RecordEventType, string> = {
   SUBMITTED: "Submitted for QA review",
   APPROVED: "Approved",
   REJECTED: "Rejected",
+  ANCHOR_PROPOSED: "Anchor proposed — awaiting independent co-signature",
+  ANCHOR_FAILED: "⚠ Anchor attempt failed",
   ANCHORED: "Anchored on blockchain",
   MODIFIED_AFTER_ANCHOR: "⚠ Content modified after anchoring",
 };
