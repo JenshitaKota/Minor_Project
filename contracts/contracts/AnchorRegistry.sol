@@ -3,16 +3,18 @@ pragma solidity 0.8.24;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
-/// @notice Notarizes hashes of approved manufacturing records on-chain.
-/// @dev Stores only a hash per record, never the record content itself.
+/// @notice Notarizes hashes of approved manufacturing records - and the anomaly
+/// verdicts about how they were reviewed - on-chain. Anchoring requires two
+/// independent attestors to jointly confirm each anchor (propose + co-sign), so no
+/// single party (not even the contract owner) can unilaterally anchor anything.
+/// @dev Stores only hashes, never record content itself.
 contract AnchorRegistry is Ownable {
     struct Anchor {
         bytes32 contentHash;
         uint256 timestamp;
-        address anchoredBy;
+        address proposedBy;
+        address coSignedBy;
     }
-
-    mapping(bytes32 => Anchor) private _anchors;
 
     /// @notice A single anomaly verdict anchored against a record - e.g. "this approval
     /// was flagged as unusually fast for this reviewer". Anchoring the finding itself
@@ -23,7 +25,22 @@ contract AnchorRegistry is Ownable {
         uint256 timestamp;
     }
 
+    struct PendingAnchor {
+        bytes32 contentHash;
+        bytes32[] findingHashes;
+        address proposedBy;
+        uint256 proposedAt;
+    }
+
+    mapping(bytes32 => Anchor) private _anchors;
     mapping(bytes32 => AnomalyFinding[]) private _anomalyFindings;
+    mapping(bytes32 => PendingAnchor) private _pending;
+    mapping(address => bool) public isAttestor;
+
+    event AttestorAdded(address indexed attestor);
+    event AttestorRemoved(address indexed attestor);
+
+    event AnchorProposed(bytes32 indexed recordId, bytes32 contentHash, address indexed proposedBy);
 
     event RecordAnchored(
         bytes32 indexed recordId,
@@ -38,24 +55,102 @@ contract AnchorRegistry is Ownable {
         uint256 timestamp
     );
 
-    constructor(address initialOwner) Ownable(initialOwner) {}
+    event AnchorCoSigned(bytes32 indexed recordId, address indexed proposedBy, address indexed coSignedBy);
 
-    /// @notice Anchors a record's content hash. Reverts if this recordId was already anchored,
-    /// so an approved record can never be silently re-pointed to a different hash.
-    function anchorRecord(bytes32 recordId, bytes32 contentHash) external onlyOwner {
-        // block.timestamp is never exactly 0 on any real chain, and miners can only shift
-        // it by seconds - irrelevant for a one-time "has this ever been set" flag.
+    modifier onlyAttestor() {
+        require(isAttestor[msg.sender], "AnchorRegistry: not an attestor");
+        _;
+    }
+
+    constructor(address initialOwner, address[] memory initialAttestors) Ownable(initialOwner) {
+        for (uint256 i = 0; i < initialAttestors.length; i++) {
+            _setAttestor(initialAttestors[i], true);
+        }
+    }
+
+    /// @notice Grants or revokes attestor status. Governance of *who may attest* stays
+    /// with the owner - a materially smaller trust surface than the single owner
+    /// directly controlling every anchoring decision, which is what this contract
+    /// otherwise removes.
+    function addAttestor(address attestor) external onlyOwner {
+        _setAttestor(attestor, true);
+    }
+
+    function removeAttestor(address attestor) external onlyOwner {
+        _setAttestor(attestor, false);
+    }
+
+    function _setAttestor(address attestor, bool allowed) private {
+        isAttestor[attestor] = allowed;
+        if (allowed) {
+            emit AttestorAdded(attestor);
+        } else {
+            emit AttestorRemoved(attestor);
+        }
+    }
+
+    /// @notice Proposes anchoring a record's content hash, plus any anomaly-finding
+    /// hashes detected at review time, as one package. Anchors nothing by itself - a
+    /// *different* attestor must independently coSignAnchor the exact same package
+    /// before it becomes permanent. Reverts if this recordId was already anchored or
+    /// already has a pending proposal.
+    function proposeAnchor(bytes32 recordId, bytes32 contentHash, bytes32[] calldata findingHashes)
+        external
+        onlyAttestor
+    {
         // slither-disable-next-line timestamp
         require(_anchors[recordId].timestamp == 0, "AnchorRegistry: already anchored");
+        require(_pending[recordId].proposedAt == 0, "AnchorRegistry: already proposed");
         require(contentHash != bytes32(0), "AnchorRegistry: empty hash");
+
+        _pending[recordId] = PendingAnchor({
+            contentHash: contentHash,
+            findingHashes: findingHashes,
+            proposedBy: msg.sender,
+            proposedAt: block.timestamp
+        });
+
+        emit AnchorProposed(recordId, contentHash, msg.sender);
+    }
+
+    /// @notice Independently confirms a pending proposal, finalizing the anchor. The
+    /// caller must be a *different* attestor than whoever proposed it - the core
+    /// guarantee that no single party can anchor anything alone - and must resupply
+    /// the exact same contentHash/findingHashes as the proposal, so the co-signer is
+    /// confirming the specific package, not blindly trusting whatever was proposed.
+    function coSignAnchor(bytes32 recordId, bytes32 contentHash, bytes32[] calldata findingHashes)
+        external
+        onlyAttestor
+    {
+        PendingAnchor memory pending = _pending[recordId];
+        // slither-disable-next-line timestamp
+        require(pending.proposedAt != 0, "AnchorRegistry: no pending proposal");
+        require(msg.sender != pending.proposedBy, "AnchorRegistry: cannot co-sign your own proposal");
+        // slither-disable-next-line incorrect-equality
+        require(pending.contentHash == contentHash, "AnchorRegistry: content hash mismatch");
+        require(
+            keccak256(abi.encode(pending.findingHashes)) == keccak256(abi.encode(findingHashes)),
+            "AnchorRegistry: finding hashes mismatch"
+        );
+
+        address proposedBy = pending.proposedBy;
+        delete _pending[recordId];
 
         _anchors[recordId] = Anchor({
             contentHash: contentHash,
             timestamp: block.timestamp,
-            anchoredBy: msg.sender
+            proposedBy: proposedBy,
+            coSignedBy: msg.sender
         });
-
         emit RecordAnchored(recordId, contentHash, block.timestamp, msg.sender);
+
+        AnomalyFinding[] storage findings = _anomalyFindings[recordId];
+        for (uint256 i = 0; i < findingHashes.length; i++) {
+            findings.push(AnomalyFinding({findingHash: findingHashes[i], timestamp: block.timestamp}));
+            emit AnomalyFindingAnchored(recordId, findingHashes[i], block.timestamp);
+        }
+
+        emit AnchorCoSigned(recordId, proposedBy, msg.sender);
     }
 
     /// @notice Compares a freshly computed hash against the anchored one.
@@ -81,25 +176,11 @@ contract AnchorRegistry is Ownable {
         return _anchors[recordId];
     }
 
-    /// @notice Anchors an anomaly verdict (e.g. a fast-approval or off-hours-approval
-    /// finding) against a record. A record may accumulate several distinct findings;
-    /// re-anchoring the exact same finding hash reverts, making this idempotent against
-    /// retries.
-    function anchorAnomalyFinding(bytes32 recordId, bytes32 findingHash) external onlyOwner {
-        require(findingHash != bytes32(0), "AnchorRegistry: empty finding hash");
-
-        AnomalyFinding[] storage findings = _anomalyFindings[recordId];
-        for (uint256 i = 0; i < findings.length; i++) {
-            // slither-disable-next-line incorrect-equality
-            require(findings[i].findingHash != findingHash, "AnchorRegistry: finding already anchored");
-        }
-
-        findings.push(AnomalyFinding({findingHash: findingHash, timestamp: block.timestamp}));
-
-        emit AnomalyFindingAnchored(recordId, findingHash, block.timestamp);
-    }
-
     function getAnomalyFindings(bytes32 recordId) external view returns (AnomalyFinding[] memory) {
         return _anomalyFindings[recordId];
+    }
+
+    function getPendingAnchor(bytes32 recordId) external view returns (PendingAnchor memory) {
+        return _pending[recordId];
     }
 }

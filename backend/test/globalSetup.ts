@@ -72,7 +72,8 @@ export default async function setup() {
       DATABASE_URL: TEST_DATABASE_URL,
       RPC_URL: process.env.RPC_URL,
       CONTRACT_ADDRESS: process.env.CONTRACT_ADDRESS,
-      ANCHOR_SIGNER_PRIVATE_KEY: process.env.ANCHOR_SIGNER_PRIVATE_KEY,
+      QA_ATTESTOR_PRIVATE_KEY: process.env.QA_ATTESTOR_PRIVATE_KEY,
+      AUDITOR_ATTESTOR_PRIVATE_KEY: process.env.AUDITOR_ATTESTOR_PRIVATE_KEY,
       JWT_SECRET: "test_secret_do_not_use_in_prod",
     })
   );

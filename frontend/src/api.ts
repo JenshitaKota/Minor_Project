@@ -127,6 +127,8 @@ export const api = {
       body: JSON.stringify({ reason }),
     }),
 
+  anchorCoSign: (id: string) => request<ManufacturingRecord>(`/records/${id}/anchor-cosign`, { method: "POST" }),
+
   anchor: (id: string) => request<ManufacturingRecord>(`/records/${id}/anchor`, { method: "POST" }),
 
   verify: (id: string) => request<VerifyResult>(`/records/${id}/verify`),

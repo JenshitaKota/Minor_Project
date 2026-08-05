@@ -5,6 +5,11 @@
         "internalType": "address",
         "name": "initialOwner",
         "type": "address"
+      },
+      {
+        "internalType": "address[]",
+        "name": "initialAttestors",
+        "type": "address[]"
       }
     ],
     "stateMutability": "nonpayable",
@@ -42,6 +47,56 @@
         "type": "bytes32"
       },
       {
+        "indexed": true,
+        "internalType": "address",
+        "name": "proposedBy",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "coSignedBy",
+        "type": "address"
+      }
+    ],
+    "name": "AnchorCoSigned",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "bytes32",
+        "name": "recordId",
+        "type": "bytes32"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes32",
+        "name": "contentHash",
+        "type": "bytes32"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "proposedBy",
+        "type": "address"
+      }
+    ],
+    "name": "AnchorProposed",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "bytes32",
+        "name": "recordId",
+        "type": "bytes32"
+      },
+      {
         "indexed": false,
         "internalType": "bytes32",
         "name": "findingHash",
@@ -55,6 +110,32 @@
       }
     ],
     "name": "AnomalyFindingAnchored",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "attestor",
+        "type": "address"
+      }
+    ],
+    "name": "AttestorAdded",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "attestor",
+        "type": "address"
+      }
+    ],
+    "name": "AttestorRemoved",
     "type": "event"
   },
   {
@@ -110,17 +191,12 @@
   {
     "inputs": [
       {
-        "internalType": "bytes32",
-        "name": "recordId",
-        "type": "bytes32"
-      },
-      {
-        "internalType": "bytes32",
-        "name": "findingHash",
-        "type": "bytes32"
+        "internalType": "address",
+        "name": "attestor",
+        "type": "address"
       }
     ],
-    "name": "anchorAnomalyFinding",
+    "name": "addAttestor",
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"
@@ -136,9 +212,14 @@
         "internalType": "bytes32",
         "name": "contentHash",
         "type": "bytes32"
+      },
+      {
+        "internalType": "bytes32[]",
+        "name": "findingHashes",
+        "type": "bytes32[]"
       }
     ],
-    "name": "anchorRecord",
+    "name": "coSignAnchor",
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"
@@ -167,7 +248,12 @@
           },
           {
             "internalType": "address",
-            "name": "anchoredBy",
+            "name": "proposedBy",
+            "type": "address"
+          },
+          {
+            "internalType": "address",
+            "name": "coSignedBy",
             "type": "address"
           }
         ],
@@ -211,6 +297,66 @@
     "type": "function"
   },
   {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "recordId",
+        "type": "bytes32"
+      }
+    ],
+    "name": "getPendingAnchor",
+    "outputs": [
+      {
+        "components": [
+          {
+            "internalType": "bytes32",
+            "name": "contentHash",
+            "type": "bytes32"
+          },
+          {
+            "internalType": "bytes32[]",
+            "name": "findingHashes",
+            "type": "bytes32[]"
+          },
+          {
+            "internalType": "address",
+            "name": "proposedBy",
+            "type": "address"
+          },
+          {
+            "internalType": "uint256",
+            "name": "proposedAt",
+            "type": "uint256"
+          }
+        ],
+        "internalType": "struct AnchorRegistry.PendingAnchor",
+        "name": "",
+        "type": "tuple"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "name": "isAttestor",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
     "inputs": [],
     "name": "owner",
     "outputs": [
@@ -221,6 +367,42 @@
       }
     ],
     "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "recordId",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "contentHash",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "bytes32[]",
+        "name": "findingHashes",
+        "type": "bytes32[]"
+      }
+    ],
+    "name": "proposeAnchor",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "attestor",
+        "type": "address"
+      }
+    ],
+    "name": "removeAttestor",
+    "outputs": [],
+    "stateMutability": "nonpayable",
     "type": "function"
   },
   {
@@ -278,3 +460,4 @@
     "type": "function"
   }
 ]
+

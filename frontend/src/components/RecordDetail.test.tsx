@@ -18,6 +18,7 @@ vi.mock("../api", () => ({
     approve: vi.fn(),
     reject: vi.fn(),
     anchor: vi.fn(),
+    anchorCoSign: vi.fn(),
     verify: vi.fn(),
     getAnomalyFindings: vi.fn().mockResolvedValue({ recordId: "rec-1", findings: [] }),
   },
@@ -37,6 +38,9 @@ function makeRecord(overrides: Partial<ManufacturingRecord>): ManufacturingRecor
     anchoredSnapshot: null,
     anchoredTxHash: null,
     anchoredAt: null,
+    anchorProposedAt: null,
+    anchorProposedBy: null,
+    anchorCoSignedBy: null,
     submittedAt: null,
     reviewedAt: null,
     reviewedBy: null,
@@ -87,7 +91,7 @@ describe("RecordDetail — role and status gated actions", () => {
       <RecordDetail record={makeRecord({ status: "SUBMITTED" })} onChanged={vi.fn()} onBack={vi.fn()} />
     );
 
-    expect(screen.getByRole("button", { name: /approve & anchor/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /approve \(propose anchor\)/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /reject/i })).toBeInTheDocument();
     expect(screen.getByDisplayValue("100")).toBeDisabled();
   });
@@ -136,6 +140,56 @@ describe("RecordDetail — role and status gated actions", () => {
 
     await waitFor(() => expect(mockedApi.getAnomalyFindings).toHaveBeenCalledWith("rec-1"));
     expect(screen.queryByText(/verified on-chain/i)).not.toBeInTheDocument();
+  });
+
+  it("lets an independent Auditor co-sign a pending anchor proposal", () => {
+    mockUseAuth.mockReturnValue({ user: asUser("AUDITOR") });
+    render(
+      <RecordDetail
+        record={makeRecord({ status: "APPROVED", anchorProposedAt: "2026-01-01T00:00:00.000Z", anchorProposedBy: "qa@test.com" })}
+        onChanged={vi.fn()}
+        onBack={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole("button", { name: /review & co-sign anchor/i })).toBeInTheDocument();
+    expect(screen.getByText(/pending independent audit co-signature/i)).toBeInTheDocument();
+  });
+
+  it("blocks the proposer from co-signing their own anchor, even as an Auditor-eligible Admin", () => {
+    mockUseAuth.mockReturnValue({ user: { id: "u1", email: "qa@test.com", name: "Test", role: "ADMIN" } });
+    render(
+      <RecordDetail
+        record={makeRecord({ status: "APPROVED", anchorProposedAt: "2026-01-01T00:00:00.000Z", anchorProposedBy: "qa@test.com" })}
+        onChanged={vi.fn()}
+        onBack={vi.fn()}
+      />
+    );
+
+    expect(screen.queryByRole("button", { name: /review & co-sign anchor/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/you proposed this anchor/i)).toBeInTheDocument();
+  });
+
+  it("offers Retry Propose Anchor to QA only when there is no pending proposal yet", () => {
+    mockUseAuth.mockReturnValue({ user: asUser("QA_MANAGER") });
+    render(
+      <RecordDetail record={makeRecord({ status: "APPROVED", anchorProposedAt: null })} onChanged={vi.fn()} onBack={vi.fn()} />
+    );
+
+    expect(screen.getByRole("button", { name: /retry propose anchor/i })).toBeInTheDocument();
+  });
+
+  it("hides Retry Propose Anchor once a proposal is pending co-signature", () => {
+    mockUseAuth.mockReturnValue({ user: asUser("QA_MANAGER") });
+    render(
+      <RecordDetail
+        record={makeRecord({ status: "APPROVED", anchorProposedAt: "2026-01-01T00:00:00.000Z", anchorProposedBy: "qa@test.com" })}
+        onChanged={vi.fn()}
+        onBack={vi.fn()}
+      />
+    );
+
+    expect(screen.queryByRole("button", { name: /retry propose anchor/i })).not.toBeInTheDocument();
   });
 
   it("offers Submit for QA Review to an Operator on a clean DRAFT record", () => {

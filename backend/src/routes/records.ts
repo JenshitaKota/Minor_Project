@@ -1,12 +1,14 @@
 import { Router } from "express";
 import { z } from "zod";
+import type { Prisma } from "../generated/prisma/client";
 import { prisma } from "../db/client";
 import { hashRecord, hashAnomalyFinding, recordIdToBytes32, type HashableAnomalyFinding } from "../chain/hash";
 import {
-  anchorOnChain,
   verifyOnChain,
   findAnchorTxHash,
-  anchorAnomalyFindingOnChain,
+  proposeAnchorOnChain,
+  coSignAnchorOnChain,
+  getPendingAnchorOnChain,
   getAnomalyFindingsOnChain,
 } from "../chain/anchorRegistry";
 import { asyncHandler } from "../middleware/asyncHandler";
@@ -41,33 +43,53 @@ function withAnomalies<T extends { submittedAt: Date | null; reviewedAt: Date | 
   return { ...record, anomalies: evaluateAnomalies(record) };
 }
 
-/** Anchors a record that's already APPROVED. Safe to call more than once for the same
- * record (e.g. retrying after a prior attempt anchored on-chain but crashed before the
- * database write completed) — see the pre-check below. */
-async function performAnchor(recordId: string) {
-  const record = await prisma.manufacturingRecord.findUniqueOrThrow({ where: { id: recordId } });
+interface AnchorableRecord {
+  id: string;
+  stage: string;
+  equipmentId: string | null;
+  content: Prisma.JsonValue;
+  submittedAt: Date | null;
+  reviewedAt: Date | null;
+  reviewedBy: string | null;
+}
 
+function buildAnomalyFinding(record: AnchorableRecord, anomaly: Anomaly, baseline: ReviewerBaseline): HashableAnomalyFinding {
+  return {
+    recordId: record.id,
+    anomalyId: anomaly.id,
+    reviewerEmail: record.reviewedBy!,
+    submittedAt: record.submittedAt!.toISOString(),
+    reviewedAt: record.reviewedAt!.toISOString(),
+    durationMs: record.reviewedAt!.getTime() - record.submittedAt!.getTime(),
+    baseline: baseline.sampleSize > 0 ? baseline : null,
+  };
+}
+
+/** The content hash and any anomaly-finding hashes for a reviewed record, computed
+ * deterministically so propose and co-sign independently arrive at the identical
+ * package (the record itself can't change between them - PATCH blocks edits while
+ * APPROVED - and the reviewer baseline is time-bounded to stay reproducible). */
+async function computeAnchorPackage(record: AnchorableRecord) {
   const snapshot = { stage: record.stage, equipmentId: record.equipmentId, content: record.content };
   const contentHash = hashRecord(record);
-  const recordIdBytes32 = recordIdToBytes32(record.id);
 
-  const preCheck = await verifyOnChain(recordIdBytes32, contentHash);
-
-  let txHash: string;
-  let timestamp: number;
-
-  if (preCheck.anchored && preCheck.matches) {
-    txHash = (await findAnchorTxHash(recordIdBytes32)) ?? "unknown (recovered from prior anchor)";
-    timestamp = preCheck.timestamp;
-  } else if (preCheck.anchored && !preCheck.matches) {
-    throw Object.assign(new Error("This recordId is already anchored on-chain with a different content hash"), {
-      statusCode: 409,
-    });
-  } else {
-    const result = await anchorOnChain(recordIdBytes32, contentHash);
-    txHash = result.txHash;
-    timestamp = result.timestamp;
+  let findingHashes: string[] = [];
+  if (record.reviewedBy && record.submittedAt && record.reviewedAt) {
+    const baseline = await getReviewerBaseline(prisma, record.reviewedBy, record.reviewedAt);
+    const anomalies = evaluateAnomalies(record, baseline);
+    findingHashes = anomalies.map((a) => hashAnomalyFinding(buildAnomalyFinding(record, a, baseline)));
   }
+
+  return { contentHash, snapshot, findingHashes };
+}
+
+/** Recovers a record whose co-sign actually succeeded on-chain but crashed before the
+ * DB write landed - syncs straight to ANCHORED instead of re-proposing (which would
+ * revert - the record is already anchored). */
+async function syncAnchoredFromChain(record: AnchorableRecord, timestamp: number) {
+  const recordIdBytes32 = recordIdToBytes32(record.id);
+  const { contentHash, snapshot } = await computeAnchorPackage(record);
+  const txHash = (await findAnchorTxHash(recordIdBytes32)) ?? "unknown (recovered from prior anchor)";
 
   const updated = await prisma.$transaction(async (tx) => {
     const updated = await tx.manufacturingRecord.update({
@@ -90,48 +112,88 @@ async function performAnchor(recordId: string) {
   return withAnomalies(updated);
 }
 
-interface ReviewedRecord {
-  id: string;
-  submittedAt: Date | null;
-  reviewedAt: Date | null;
-  reviewedBy: string | null;
-}
-
-function buildAnomalyFinding(record: ReviewedRecord, anomaly: Anomaly, baseline: ReviewerBaseline): HashableAnomalyFinding {
-  return {
-    recordId: record.id,
-    anomalyId: anomaly.id,
-    reviewerEmail: record.reviewedBy!,
-    submittedAt: record.submittedAt!.toISOString(),
-    reviewedAt: record.reviewedAt!.toISOString(),
-    durationMs: record.reviewedAt!.getTime() - record.submittedAt!.getTime(),
-    baseline: baseline.sampleSize > 0 ? baseline : null,
-  };
-}
-
-/** Evaluates anomalies for a just-reviewed record against the reviewer's own baseline,
- * and anchors any findings on-chain — anchoring the verdict itself, at the moment it's
- * detected, so it can't be silently edited or suppressed later even with DB access.
- * A failure here logs and continues rather than blocking the caller: the record's data
- * hash (performAnchor) is the priority, and a missed finding can be re-derived and
- * anchored later from the same (reproducible) reviewer history. */
-async function anchorAnomalyFindings(record: ReviewedRecord): Promise<void> {
-  if (!record.reviewedBy || !record.submittedAt || !record.reviewedAt) return;
-
-  const baseline = await getReviewerBaseline(prisma, record.reviewedBy, record.reviewedAt);
-  const anomalies = evaluateAnomalies(record, baseline);
-  if (anomalies.length === 0) return;
-
+/** Proposes anchoring a just-approved record's content hash, plus any anomaly
+ * findings detected at review time, as one package. This does not anchor anything by
+ * itself - a *different*, independent Auditor must separately co-sign (see
+ * coSignAnchor below) before it becomes permanent; see AnchorRegistry.proposeAnchor.
+ * Safe to call more than once for the same record (e.g. retrying after a crash before
+ * the DB write landed). */
+async function proposeAnchor(recordId: string) {
+  const record = await prisma.manufacturingRecord.findUniqueOrThrow({ where: { id: recordId } });
   const recordIdBytes32 = recordIdToBytes32(record.id);
 
-  for (const anomaly of anomalies) {
-    try {
-      const findingHash = hashAnomalyFinding(buildAnomalyFinding(record, anomaly, baseline));
-      await anchorAnomalyFindingOnChain(recordIdBytes32, findingHash);
-    } catch (err) {
-      console.error(`Failed to anchor anomaly finding "${anomaly.id}" for record ${record.id}:`, err);
-    }
+  const { anchored, matches, timestamp } = await verifyOnChain(recordIdBytes32, hashRecord(record));
+  if (anchored && matches) {
+    return syncAnchoredFromChain(record, timestamp);
   }
+
+  const pending = await getPendingAnchorOnChain(recordIdBytes32);
+  let proposedAt: number;
+  if (pending.proposedAt !== 0) {
+    // Already proposed on-chain (e.g. a crash before this DB write landed last time) -
+    // re-proposing would revert, so just sync the DB state instead.
+    proposedAt = pending.proposedAt;
+  } else {
+    const { contentHash, findingHashes } = await computeAnchorPackage(record);
+    const result = await proposeAnchorOnChain(recordIdBytes32, contentHash, findingHashes);
+    proposedAt = result.timestamp;
+  }
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const updated = await tx.manufacturingRecord.update({
+      where: { id: record.id },
+      data: { anchorProposedAt: new Date(proposedAt * 1000), anchorProposedBy: record.reviewedBy },
+      include: withRelations,
+    });
+    await tx.recordEvent.create({
+      data: { recordId: record.id, stage: record.stage, type: "ANCHOR_PROPOSED", actor: record.reviewedBy },
+    });
+    return updated;
+  });
+
+  return withAnomalies(updated);
+}
+
+/** Independently confirms a pending anchor proposal, finalizing it on-chain (the
+ * content hash and every bundled anomaly finding, atomically) and updating the record
+ * to ANCHORED. The caller must not be the same person who proposed it - checked here
+ * for a clear error message, and enforced again on-chain regardless (the real
+ * guarantee: coSignAnchor reverts if called by the same *attestor address* that
+ * proposed).
+ *
+ * Honest scope note: this reference deployment holds both attestor private keys
+ * (QA_ATTESTOR_PRIVATE_KEY, AUDITOR_ATTESTOR_PRIVATE_KEY) in the same backend process,
+ * so the on-chain guarantee here is "two distinct signatures required," not yet "two
+ * independently-operated systems required" - a fully compromised backend still holds
+ * both keys. A production deployment would have the Auditor's key held and operated
+ * by a separate system, ideally gated by that Auditor's own authentication rather
+ * than this backend's. */
+async function coSignAnchor(record: AnchorableRecord, coSignedBy: string) {
+  const recordIdBytes32 = recordIdToBytes32(record.id);
+  const { contentHash, snapshot, findingHashes } = await computeAnchorPackage(record);
+
+  const result = await coSignAnchorOnChain(recordIdBytes32, contentHash, findingHashes);
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const updated = await tx.manufacturingRecord.update({
+      where: { id: record.id },
+      data: {
+        status: "ANCHORED",
+        contentHash,
+        anchoredSnapshot: snapshot,
+        anchoredTxHash: result.txHash,
+        anchoredAt: new Date(result.timestamp * 1000),
+        anchorCoSignedBy: coSignedBy,
+      },
+      include: withRelations,
+    });
+    await tx.recordEvent.create({
+      data: { recordId: record.id, stage: record.stage, type: "ANCHORED", actor: coSignedBy, detail: result.txHash },
+    });
+    return updated;
+  });
+
+  return withAnomalies(updated);
 }
 
 const DEFAULT_PAGE_SIZE = 20;
@@ -279,9 +341,11 @@ recordsRouter.post(
   })
 );
 
-/** QA approval and anchoring happen as one workflow action: a SUBMITTED record goes
- * straight to ANCHORED. If the blockchain write fails, the record is left APPROVED so
- * it's clearly "reviewed, not yet on-chain" and can be retried via /anchor. */
+/** QA approval proposes an anchor - it does not finalize one. A SUBMITTED record
+ * moves to APPROVED and its content hash (plus any anomaly findings) are proposed
+ * on-chain; the record only reaches ANCHORED once a *different*, independent Auditor
+ * co-signs via /anchor-cosign. If the on-chain propose fails, the record is left
+ * APPROVED with no pending proposal and can be retried via /anchor. */
 recordsRouter.post(
   "/:id/approve",
   requireRole("QA_MANAGER", "ADMIN"),
@@ -292,21 +356,18 @@ recordsRouter.post(
       return res.status(409).json({ error: `Cannot approve a record with status ${record.status}` });
     }
 
-    const reviewed = await prisma.$transaction(async (tx) => {
-      const reviewed = await tx.manufacturingRecord.update({
+    await prisma.$transaction(async (tx) => {
+      await tx.manufacturingRecord.update({
         where: { id: req.params.id },
         data: { status: "APPROVED", reviewedAt: new Date(), reviewedBy: req.user!.email, rejectionReason: null },
       });
       await tx.recordEvent.create({
         data: { recordId: record.id, stage: record.stage, type: "APPROVED", actor: req.user!.email },
       });
-      return reviewed;
     });
 
-    await anchorAnomalyFindings(reviewed);
-
-    const anchored = await performAnchor(req.params.id);
-    res.json(anchored);
+    const proposed = await proposeAnchor(req.params.id);
+    res.json(proposed);
   })
 );
 
@@ -338,8 +399,9 @@ recordsRouter.post(
   })
 );
 
-/** Manual retry for the rare case where approval succeeded but the on-chain write failed
- * (record is left APPROVED, not ANCHORED, so this stays available until it succeeds). */
+/** Manual retry for the rare case where approval succeeded but the on-chain propose
+ * failed (record is left APPROVED with no pending proposal). This only re-proposes -
+ * finalizing still requires a separate, independent Auditor co-signature. */
 recordsRouter.post(
   "/:id/anchor",
   requireRole("QA_MANAGER", "ADMIN"),
@@ -347,10 +409,34 @@ recordsRouter.post(
     const record = await prisma.manufacturingRecord.findUnique({ where: { id: req.params.id } });
     if (!record) return res.status(404).json({ error: "Record not found" });
     if (record.status !== "APPROVED") {
-      return res.status(409).json({ error: `Cannot anchor a record with status ${record.status}` });
+      return res.status(409).json({ error: `Cannot propose an anchor for a record with status ${record.status}` });
+    }
+    if (record.anchorProposedAt) {
+      return res.status(409).json({ error: "Anchor already proposed - awaiting an independent Auditor co-signature" });
     }
 
-    const updated = await performAnchor(req.params.id);
+    const updated = await proposeAnchor(req.params.id);
+    res.json(updated);
+  })
+);
+
+/** Independently confirms a pending anchor proposal. Must be a different person than
+ * whoever proposed it (see coSignAnchor above for why - checked here for a clear
+ * error, enforced again on-chain as the real guarantee). */
+recordsRouter.post(
+  "/:id/anchor-cosign",
+  requireRole("AUDITOR", "ADMIN"),
+  asyncHandler(async (req, res) => {
+    const record = await prisma.manufacturingRecord.findUnique({ where: { id: req.params.id } });
+    if (!record) return res.status(404).json({ error: "Record not found" });
+    if (record.status !== "APPROVED" || !record.anchorProposedAt) {
+      return res.status(409).json({ error: "No pending anchor proposal for this record" });
+    }
+    if (req.user!.email === record.anchorProposedBy) {
+      return res.status(403).json({ error: "You proposed this anchor - a different reviewer must independently co-sign it" });
+    }
+
+    const updated = await coSignAnchor(record, req.user!.email);
     res.json(updated);
   })
 );

@@ -81,6 +81,12 @@ export interface ManufacturingRecord {
   anchoredSnapshot: RecordSnapshot | null;
   anchoredTxHash: string | null;
   anchoredAt: string | null;
+  /** Set once a QA approval proposes an anchor; cleared implicitly once anchoredAt is
+   * set. A record with this set but anchoredAt still null is awaiting an independent
+   * Auditor's co-signature - no single person can anchor it alone. */
+  anchorProposedAt: string | null;
+  anchorProposedBy: string | null;
+  anchorCoSignedBy: string | null;
   submittedAt: string | null;
   reviewedAt: string | null;
   reviewedBy: string | null;

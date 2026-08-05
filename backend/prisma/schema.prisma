@@ -35,6 +35,7 @@ enum RecordEventType {
   SUBMITTED
   APPROVED
   REJECTED
+  ANCHOR_PROPOSED
   ANCHORED
   MODIFIED_AFTER_ANCHOR
 }
@@ -84,6 +85,13 @@ model ManufacturingRecord {
   anchoredSnapshot Json?
   anchoredTxHash   String?
   anchoredAt       DateTime?
+
+  /// Set when the reviewer's approval proposes an anchor on-chain; cleared (implicitly,
+  /// by anchoredAt being set) once a separate, independent Auditor co-signs it. A record
+  /// with anchorProposedAt set but anchoredAt still null is awaiting that co-signature.
+  anchorProposedAt DateTime?
+  anchorProposedBy String?
+  anchorCoSignedBy String?
 
   submittedAt      DateTime?
   reviewedAt       DateTime?

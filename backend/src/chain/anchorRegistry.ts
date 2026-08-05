@@ -2,20 +2,27 @@ import { Contract, JsonRpcProvider, NonceManager, Wallet } from "ethers";
 import abi from "./AnchorRegistry.abi.json";
 
 const provider = new JsonRpcProvider(process.env.RPC_URL);
-const wallet = new Wallet(process.env.ANCHOR_SIGNER_PRIVATE_KEY as string, provider);
-// A single approval can now fire more than one on-chain write in quick succession
-// (the record anchor, plus one anchor per anomaly finding). Without NonceManager, each
-// send re-queries the "pending" nonce from the node, which can return a stale value for
-// the second send before the first has propagated - NonceManager tracks the next nonce
-// client-side instead, so back-to-back sends from this signer are always sequenced correctly.
-const signer = new NonceManager(wallet);
 
-const contract = new Contract(process.env.CONTRACT_ADDRESS as string, abi, signer);
-
-export interface AnchorResult {
-  txHash: string;
-  timestamp: number;
+// Anchoring requires two *independent* attestors: the QA signer proposes (mirrors the
+// human QA approval that triggers it), the Auditor signer co-signs (mirrors an
+// independent human audit review). No single key - not even this backend process
+// alone - can anchor anything without both. See AnchorRegistry.proposeAnchor/coSignAnchor.
+//
+// NonceManager wraps each signer because a single approval can fire more than one
+// on-chain write from the same key in quick succession (propose, then separately
+// co-sign); without it, each send re-queries the "pending" nonce from the node, which
+// can go stale between back-to-back sends under Hardhat's automining.
+function makeSigner(privateKey: string) {
+  return new NonceManager(new Wallet(privateKey, provider));
 }
+
+const qaSigner = makeSigner(process.env.QA_ATTESTOR_PRIVATE_KEY as string);
+const auditorSigner = makeSigner(process.env.AUDITOR_ATTESTOR_PRIVATE_KEY as string);
+
+const contractAddress = process.env.CONTRACT_ADDRESS as string;
+const readContract = new Contract(contractAddress, abi, provider);
+const qaContract = new Contract(contractAddress, abi, qaSigner);
+const auditorContract = new Contract(contractAddress, abi, auditorSigner);
 
 export interface VerifyResult {
   anchored: boolean;
@@ -23,20 +30,8 @@ export interface VerifyResult {
   timestamp: number;
 }
 
-export async function anchorOnChain(recordIdBytes32: string, contentHash: string): Promise<AnchorResult> {
-  const tx = await contract.anchorRecord(recordIdBytes32, contentHash);
-  const receipt = await tx.wait();
-
-  const [, , timestamp] = await contract.verifyRecord(recordIdBytes32, contentHash);
-
-  return {
-    txHash: receipt.hash,
-    timestamp: Number(timestamp),
-  };
-}
-
 export async function verifyOnChain(recordIdBytes32: string, contentHash: string): Promise<VerifyResult> {
-  const [anchored, matches, timestamp] = await contract.verifyRecord(recordIdBytes32, contentHash);
+  const [anchored, matches, timestamp] = await readContract.verifyRecord(recordIdBytes32, contentHash);
 
   return {
     anchored,
@@ -48,8 +43,8 @@ export async function verifyOnChain(recordIdBytes32: string, contentHash: string
 /** Finds the tx hash of a past anchor, for recovering from a crash between the on-chain
  * write succeeding and the database update that was supposed to follow it. */
 export async function findAnchorTxHash(recordIdBytes32: string): Promise<string | null> {
-  const filter = contract.filters.RecordAnchored(recordIdBytes32);
-  const events = await contract.queryFilter(filter);
+  const filter = readContract.filters.RecordAnchored(recordIdBytes32);
+  const events = await readContract.queryFilter(filter);
   return events.length > 0 ? events[0].transactionHash : null;
 }
 
@@ -59,25 +54,56 @@ export interface AnomalyFindingOnChain {
 }
 
 export async function getAnomalyFindingsOnChain(recordIdBytes32: string): Promise<AnomalyFindingOnChain[]> {
-  const findings = await contract.getAnomalyFindings(recordIdBytes32);
+  const findings = await readContract.getAnomalyFindings(recordIdBytes32);
   return findings.map((f: { findingHash: string; timestamp: bigint }) => ({
     findingHash: f.findingHash,
     timestamp: Number(f.timestamp),
   }));
 }
 
-/** Anchors an anomaly verdict against a record. Reverts if this exact finding hash was
- * already anchored for this record (idempotent against retries) - see
- * AnchorRegistry.anchorAnomalyFinding. */
-export async function anchorAnomalyFindingOnChain(
+export interface PendingAnchorOnChain {
+  contentHash: string;
+  findingHashes: string[];
+  proposedBy: string;
+  proposedAt: number;
+}
+
+export async function getPendingAnchorOnChain(recordIdBytes32: string): Promise<PendingAnchorOnChain> {
+  const pending = await readContract.getPendingAnchor(recordIdBytes32);
+  return {
+    contentHash: pending.contentHash,
+    findingHashes: [...pending.findingHashes],
+    proposedBy: pending.proposedBy,
+    proposedAt: Number(pending.proposedAt),
+  };
+}
+
+/** Proposes anchoring a record's content hash plus any anomaly-finding hashes as one
+ * package. Anchors nothing by itself - a separate coSignAnchorOnChain call, from the
+ * independent Auditor signer, is required to finalize it. */
+export async function proposeAnchorOnChain(
   recordIdBytes32: string,
-  findingHash: string
+  contentHash: string,
+  findingHashes: string[]
 ): Promise<{ txHash: string; timestamp: number }> {
-  const tx = await contract.anchorAnomalyFinding(recordIdBytes32, findingHash);
+  const tx = await qaContract.proposeAnchor(recordIdBytes32, contentHash, findingHashes);
   const receipt = await tx.wait();
 
-  const findings = await getAnomalyFindingsOnChain(recordIdBytes32);
-  const anchored = findings.find((f) => f.findingHash === findingHash);
+  const pending = await getPendingAnchorOnChain(recordIdBytes32);
+  return { txHash: receipt.hash, timestamp: pending.proposedAt || Math.floor(Date.now() / 1000) };
+}
 
-  return { txHash: receipt.hash, timestamp: anchored?.timestamp ?? Math.floor(Date.now() / 1000) };
+/** Independently confirms a pending proposal, finalizing the anchor and any bundled
+ * anomaly findings in one transaction. Reverts on-chain if called by the same
+ * attestor that proposed it - see AnchorRegistry.coSignAnchor. */
+export async function coSignAnchorOnChain(
+  recordIdBytes32: string,
+  contentHash: string,
+  findingHashes: string[]
+): Promise<{ txHash: string; timestamp: number }> {
+  const tx = await auditorContract.coSignAnchor(recordIdBytes32, contentHash, findingHashes);
+  const receipt = await tx.wait();
+
+  const { matches, timestamp } = await verifyOnChain(recordIdBytes32, contentHash);
+  return { txHash: receipt.hash, timestamp: matches ? timestamp : Math.floor(Date.now() / 1000) };
 }

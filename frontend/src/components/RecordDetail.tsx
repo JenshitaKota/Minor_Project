@@ -19,8 +19,13 @@ export function RecordDetail({ record, onChanged, onBack }: Props) {
   const { user } = useAuth();
   const isOperator = user?.role === "OPERATOR" || user?.role === "ADMIN";
   const isQaManager = user?.role === "QA_MANAGER" || user?.role === "ADMIN";
+  const isAuditor = user?.role === "AUDITOR" || user?.role === "ADMIN";
   const isEditableStatus = record.status === "DRAFT" || record.status === "REJECTED" || record.status === "ANCHORED";
   const canEdit = isOperator && isEditableStatus;
+
+  const pendingCoSign = record.status === "APPROVED" && Boolean(record.anchorProposedAt);
+  const isOwnProposal = pendingCoSign && user?.email === record.anchorProposedBy;
+  const canCoSign = pendingCoSign && isAuditor && !isOwnProposal;
 
   const [editedContent, setEditedContent] = useState<RecordContent>(record.content);
   const [editedEquipmentId, setEditedEquipmentId] = useState<string>(record.equipmentId ?? "");
@@ -107,6 +112,12 @@ export function RecordDetail({ record, onChanged, onBack }: Props) {
       onChanged(updated);
     });
 
+  const handleCoSign = () =>
+    run("cosign", async () => {
+      const updated = await api.anchorCoSign(record.id);
+      onChanged(updated);
+    });
+
   const handleVerify = () =>
     run("verify", async () => {
       const result = await api.verify(record.id);
@@ -172,6 +183,29 @@ export function RecordDetail({ record, onChanged, onBack }: Props) {
             <div className="label">Transaction hash</div>
             <div className="hash">{record.anchoredTxHash}</div>
           </div>
+          <div className="meta-item">
+            <div className="label">Proposed by</div>
+            <div>{record.anchorProposedBy ?? "-"}</div>
+          </div>
+          <div className="meta-item">
+            <div className="label">Co-signed by</div>
+            <div>{record.anchorCoSignedBy ?? "-"}</div>
+          </div>
+        </div>
+      )}
+
+      {pendingCoSign && (
+        <div className="anomaly-banner">
+          <div className="headline">⛓ Pending independent audit co-signature</div>
+          <div>
+            Proposed by <strong>{record.anchorProposedBy}</strong> — no single reviewer can anchor a record alone; a
+            different Auditor must independently confirm this before it becomes permanent.
+          </div>
+          {isOwnProposal && (
+            <div style={{ marginTop: 8, fontStyle: "italic" }}>
+              You proposed this anchor, so you can't co-sign it yourself.
+            </div>
+          )}
         </div>
       )}
 
@@ -224,7 +258,7 @@ export function RecordDetail({ record, onChanged, onBack }: Props) {
         {isQaManager && record.status === "SUBMITTED" && (
           <>
             <button className="btn btn-primary" onClick={handleApprove} disabled={busy !== null}>
-              {busy === "approve" ? "Approving..." : "Approve & Anchor"}
+              {busy === "approve" ? "Approving..." : "Approve (Propose Anchor)"}
             </button>
             <button className="btn btn-secondary" onClick={() => setRejecting((v) => !v)} disabled={busy !== null}>
               Reject
@@ -232,9 +266,15 @@ export function RecordDetail({ record, onChanged, onBack }: Props) {
           </>
         )}
 
-        {isQaManager && record.status === "APPROVED" && (
+        {isQaManager && record.status === "APPROVED" && !record.anchorProposedAt && (
           <button className="btn btn-primary" onClick={handleAnchor} disabled={busy !== null}>
-            {busy === "anchor" ? "Retrying..." : "Retry Anchor"}
+            {busy === "anchor" ? "Retrying..." : "Retry Propose Anchor"}
+          </button>
+        )}
+
+        {canCoSign && (
+          <button className="btn btn-primary" onClick={handleCoSign} disabled={busy !== null}>
+            {busy === "cosign" ? "Co-signing..." : "Review & Co-Sign Anchor"}
           </button>
         )}
 
