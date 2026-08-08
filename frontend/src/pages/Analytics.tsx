@@ -5,6 +5,13 @@ import type { AnalyticsSummary, RecordStatus } from "../types";
 
 const STATUS_ORDER: RecordStatus[] = ["DRAFT", "SUBMITTED", "APPROVED", "ANCHORED", "REJECTED"];
 
+const EQUIPMENT_STATUS_ORDER: { key: "active" | "pendingCoSign" | "overdue" | "retired"; label: string; className: string }[] = [
+  { key: "active", label: "ACTIVE", className: "status-bar-eq-active" },
+  { key: "pendingCoSign", label: "PENDING CO-SIGN", className: "status-bar-eq-pending" },
+  { key: "overdue", label: "OVERDUE", className: "status-bar-eq-overdue" },
+  { key: "retired", label: "RETIRED", className: "status-bar-eq-retired" },
+];
+
 function formatDuration(minutes: number | null): string {
   if (minutes === null) return "—";
   if (minutes < 1) return `${Math.round(minutes * 60)}s`;
@@ -67,9 +74,22 @@ export default function Analytics() {
                 {summary.anomalyCount}
               </div>
             </div>
+            <div className="stat-tile">
+              <div className="stat-label">Awaiting co-signature</div>
+              <div
+                className={`stat-value ${
+                  summary.pendingCoSignatures.records + summary.pendingCoSignatures.equipmentCalibrations > 0 ? "stat-value-warning" : ""
+                }`}
+              >
+                {summary.pendingCoSignatures.records + summary.pendingCoSignatures.equipmentCalibrations}
+              </div>
+              <div className="stat-sub">
+                {summary.pendingCoSignatures.records} records · {summary.pendingCoSignatures.equipmentCalibrations} calibrations
+              </div>
+            </div>
           </div>
 
-          <div className="panel">
+          <div className="panel" style={{ marginBottom: 16 }}>
             <h2>Records by status</h2>
             <div className="status-bars">
               {STATUS_ORDER.map((status) => {
@@ -83,6 +103,25 @@ export default function Analytics() {
                         className={`status-bar-fill status-bar-${status}`}
                         style={{ width: `${(count / max) * 100}%` }}
                       />
+                    </div>
+                    <span className="status-bar-count">{count}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="panel">
+            <h2>Equipment calibration status</h2>
+            <div className="status-bars">
+              {EQUIPMENT_STATUS_ORDER.map(({ key, label, className }) => {
+                const count = summary.equipmentStatus[key];
+                const max = Math.max(1, ...EQUIPMENT_STATUS_ORDER.map((s) => summary.equipmentStatus[s.key]));
+                return (
+                  <div key={key} className="status-bar-row">
+                    <span className="status-bar-label">{label}</span>
+                    <div className="status-bar-track">
+                      <div className={`status-bar-fill ${className}`} style={{ width: `${(count / max) * 100}%` }} />
                     </div>
                     <span className="status-bar-count">{count}</span>
                   </div>

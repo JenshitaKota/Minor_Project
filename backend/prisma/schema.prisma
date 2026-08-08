@@ -69,7 +69,37 @@ model Equipment {
   type   String
   status EquipmentStatus @default(ACTIVE)
 
-  records ManufacturingRecord[]
+  records      ManufacturingRecord[]
+  calibrations EquipmentCalibration[]
+}
+
+/// A calibration event, anchored on-chain with the same propose/co-sign guarantee
+/// manufacturing records get: whoever performed the calibration proposes it, and a
+/// *different*, independent party (an Auditor) must co-sign before the equipment is
+/// trusted again. Mirrors ManufacturingRecord's anchor fields deliberately - same
+/// shape, same mental model, reusing the same AnchorRegistry contract (recordId is
+/// generic on-chain; nothing ties it to manufacturing records specifically).
+model EquipmentCalibration {
+  id              String    @id @default(uuid())
+  equipment       Equipment @relation(fields: [equipmentId], references: [id])
+  equipmentId     String
+
+  certificateNumber String
+  technician        String
+  calibratedAt      DateTime
+  nextDueAt         DateTime
+  content           Json
+
+  contentHash      String?
+  anchorProposedAt DateTime?
+  anchorProposedBy String?
+  anchorCoSignedBy String?
+  anchoredTxHash   String?
+  anchoredAt       DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([equipmentId])
 }
 
 model ManufacturingRecord {

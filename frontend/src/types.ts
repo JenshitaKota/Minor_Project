@@ -28,6 +28,36 @@ export interface Equipment {
   status: EquipmentStatus;
 }
 
+/** A calibration event, anchored with the same propose/co-sign guarantee
+ * manufacturing records get - see ManufacturingRecord's anchor fields, mirrored
+ * here deliberately. Equipment stays MAINTENANCE until a *different* Auditor
+ * co-signs (anchorCoSignedBy set), which is what returns it to ACTIVE. */
+export interface EquipmentCalibration {
+  id: string;
+  equipmentId: string;
+  equipment?: Equipment;
+  certificateNumber: string;
+  technician: string;
+  calibratedAt: string;
+  nextDueAt: string;
+  contentHash: string | null;
+  anchorProposedAt: string | null;
+  anchorProposedBy: string | null;
+  anchorCoSignedBy: string | null;
+  anchoredTxHash: string | null;
+  anchoredAt: string | null;
+  createdAt: string;
+}
+
+export interface CalibrationVerifyResult {
+  calibrationId: string;
+  anchored: boolean;
+  matches: boolean;
+  anchoredAt: string;
+  anchoredHash: string;
+  currentHash: string;
+}
+
 export type RecordContent = Record<string, string | number>;
 
 export interface Anomaly {
@@ -106,6 +136,8 @@ export interface AnalyticsSummary {
   verification: { checked: number; passed: number; passRatePercent: number | null };
   averageApprovalTimeMinutes: number | null;
   anomalyCount: number;
+  pendingCoSignatures: { records: number; equipmentCalibrations: number };
+  equipmentStatus: { active: number; overdue: number; pendingCoSign: number; retired: number };
 }
 
 export interface VerifyResult {

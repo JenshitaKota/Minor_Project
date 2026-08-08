@@ -13,9 +13,12 @@ analyticsRouter.use(authenticate);
 analyticsRouter.get(
   "/summary",
   asyncHandler(async (_req, res) => {
-    const [totalBatches, records] = await Promise.all([
+    const [totalBatches, records, equipmentList] = await Promise.all([
       prisma.batch.count(),
       prisma.manufacturingRecord.findMany(),
+      prisma.equipment.findMany({
+        include: { calibrations: { orderBy: { calibratedAt: "desc" }, take: 1 } },
+      }),
     ]);
 
     const statusBreakdown = { DRAFT: 0, SUBMITTED: 0, APPROVED: 0, ANCHORED: 0, REJECTED: 0 };
@@ -49,6 +52,34 @@ analyticsRouter.get(
 
     const anomalyCount = records.filter((r) => evaluateAnomalies(r).length > 0).length;
 
+    const pendingRecordCoSignCount = records.filter(
+      (r) => r.status === "APPROVED" && r.anchorProposedAt && !r.anchoredAt
+    ).length;
+
+    // Equipment status, rolled up from each equipment's most recent calibration: a
+    // pending co-signature takes priority (equipment is mid-calibration, unresolved),
+    // then overdue (past due for recalibration, or never calibrated at all), else active.
+    const now = new Date();
+    let equipmentActive = 0;
+    let equipmentOverdue = 0;
+    let equipmentPendingCoSign = 0;
+    let equipmentRetired = 0;
+
+    for (const equipment of equipmentList) {
+      if (equipment.status === "RETIRED") {
+        equipmentRetired++;
+        continue;
+      }
+      const latest = equipment.calibrations[0];
+      if (latest && latest.anchorProposedAt && !latest.anchoredAt) {
+        equipmentPendingCoSign++;
+      } else if (!latest || (latest.anchoredAt && latest.nextDueAt < now)) {
+        equipmentOverdue++;
+      } else {
+        equipmentActive++;
+      }
+    }
+
     res.json({
       totalBatches,
       totalRecords: records.length,
@@ -56,6 +87,16 @@ analyticsRouter.get(
       verification: { checked, passed, passRatePercent },
       averageApprovalTimeMinutes,
       anomalyCount,
+      pendingCoSignatures: {
+        records: pendingRecordCoSignCount,
+        equipmentCalibrations: equipmentPendingCoSign,
+      },
+      equipmentStatus: {
+        active: equipmentActive,
+        overdue: equipmentOverdue,
+        pendingCoSign: equipmentPendingCoSign,
+        retired: equipmentRetired,
+      },
     });
   })
 );

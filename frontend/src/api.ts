@@ -2,7 +2,9 @@ import type {
   AnalyticsSummary,
   AnomalyFinding,
   Batch,
+  CalibrationVerifyResult,
   Equipment,
+  EquipmentCalibration,
   ManufacturingRecord,
   RecordContent,
   Role,
@@ -57,6 +59,11 @@ export interface Page<T> {
   pageSize: number;
 }
 
+export interface PendingCoSign<T> {
+  count: number;
+  items: T[];
+}
+
 export const api = {
   login: (email: string, password: string) =>
     request<{ user: User }>("/auth/login", {
@@ -100,6 +107,35 @@ export const api = {
       body: JSON.stringify({ status }),
     }),
 
+  listCalibrations: (equipmentId: string) => request<EquipmentCalibration[]>(`/equipment/${equipmentId}/calibrations`),
+
+  calibrateEquipment: (
+    equipmentId: string,
+    certificateNumber: string,
+    technician: string,
+    calibratedAt: string,
+    nextDueAt: string
+  ) =>
+    request<EquipmentCalibration>(`/equipment/${equipmentId}/calibrate`, {
+      method: "POST",
+      body: JSON.stringify({ certificateNumber, technician, calibratedAt, nextDueAt }),
+    }),
+
+  retryProposeCalibration: (equipmentId: string, calibrationId: string) =>
+    request<EquipmentCalibration>(`/equipment/${equipmentId}/calibration/${calibrationId}/retry-propose`, {
+      method: "POST",
+    }),
+
+  coSignCalibration: (equipmentId: string, calibrationId: string) =>
+    request<EquipmentCalibration>(`/equipment/${equipmentId}/calibration/${calibrationId}/cosign`, {
+      method: "POST",
+    }),
+
+  verifyCalibration: (equipmentId: string, calibrationId: string) =>
+    request<CalibrationVerifyResult>(`/equipment/${equipmentId}/calibration/${calibrationId}/verify`),
+
+  pendingCalibrationCoSigns: () => request<PendingCoSign<EquipmentCalibration>>("/equipment/pending-cosign"),
+
   createRecord: (batchId: string, stage: string, equipmentId: string | null, content: RecordContent) =>
     request<ManufacturingRecord>("/records", {
       method: "POST",
@@ -128,6 +164,8 @@ export const api = {
     }),
 
   anchorCoSign: (id: string) => request<ManufacturingRecord>(`/records/${id}/anchor-cosign`, { method: "POST" }),
+
+  pendingRecordCoSigns: () => request<PendingCoSign<ManufacturingRecord>>("/records/pending-cosign"),
 
   anchor: (id: string) => request<ManufacturingRecord>(`/records/${id}/anchor`, { method: "POST" }),
 

@@ -15,6 +15,8 @@ vi.mock("../api", () => ({
     getBatch: vi.fn(),
     createBatch: vi.fn(),
     listEquipment: vi.fn().mockResolvedValue([]),
+    pendingRecordCoSigns: vi.fn().mockResolvedValue({ count: 0, items: [] }),
+    pendingCalibrationCoSigns: vi.fn().mockResolvedValue({ count: 0, items: [] }),
   },
 }));
 
@@ -23,6 +25,8 @@ const mockedApi = api as unknown as {
   getBatch: Mock;
   createBatch: Mock;
   listEquipment: Mock;
+  pendingRecordCoSigns: Mock;
+  pendingCalibrationCoSigns: Mock;
 };
 
 function asUser(role: User["role"]): User {
@@ -60,6 +64,10 @@ describe("Dashboard", () => {
     mockedApi.createBatch.mockReset();
     mockedApi.listEquipment.mockReset();
     mockedApi.listEquipment.mockResolvedValue([]);
+    mockedApi.pendingRecordCoSigns.mockReset();
+    mockedApi.pendingRecordCoSigns.mockResolvedValue({ count: 0, items: [] });
+    mockedApi.pendingCalibrationCoSigns.mockReset();
+    mockedApi.pendingCalibrationCoSigns.mockResolvedValue({ count: 0, items: [] });
   });
 
   it("shows the empty state when there are no batches", async () => {
@@ -138,5 +146,26 @@ describe("Dashboard", () => {
     await waitFor(() => expect(mockedApi.listBatches).toHaveBeenCalled());
     await userEvent.click(screen.getByText("Sign out"));
     expect(logout).toHaveBeenCalled();
+  });
+
+  it("shows pending co-sign badges for an Auditor with items awaiting them", async () => {
+    mockUseAuth.mockReturnValue({ user: asUser("AUDITOR"), logout: vi.fn() });
+    mockedApi.listBatches.mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 20 });
+    mockedApi.pendingRecordCoSigns.mockResolvedValue({ count: 2, items: [] });
+    mockedApi.pendingCalibrationCoSigns.mockResolvedValue({ count: 1, items: [] });
+    renderDashboard();
+
+    await waitFor(() => expect(screen.getByTitle("Records awaiting your co-signature")).toHaveTextContent("2"));
+    expect(screen.getByTitle("Calibrations awaiting your co-signature")).toHaveTextContent("1");
+  });
+
+  it("does not fetch or show pending co-sign badges for a non-Auditor role", async () => {
+    mockUseAuth.mockReturnValue({ user: asUser("OPERATOR"), logout: vi.fn() });
+    mockedApi.listBatches.mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 20 });
+    renderDashboard();
+
+    await waitFor(() => expect(mockedApi.listBatches).toHaveBeenCalled());
+    expect(mockedApi.pendingRecordCoSigns).not.toHaveBeenCalled();
+    expect(mockedApi.pendingCalibrationCoSigns).not.toHaveBeenCalled();
   });
 });

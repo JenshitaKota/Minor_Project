@@ -894,6 +894,22 @@ input, textarea {
   background: var(--color-danger);
 }
 
+.status-bar-eq-active {
+  background: var(--color-success);
+}
+
+.status-bar-eq-pending {
+  background: var(--color-primary);
+}
+
+.status-bar-eq-overdue {
+  background: var(--color-danger);
+}
+
+.status-bar-eq-retired {
+  background: #8892a0;
+}
+
 .status-bar-count {
   font-size: 12px;
   color: var(--color-text-muted);

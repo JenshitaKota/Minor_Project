@@ -256,6 +256,29 @@ recordsRouter.get(
   })
 );
 
+/** Records proposed for anchoring but not yet independently co-signed - nothing
+ * today tells an Auditor something is waiting on them otherwise, they'd have to go
+ * looking. Excludes records the caller themself proposed, since they can't co-sign
+ * their own proposal anyway (see coSignAnchor's same-person check). Registered
+ * before GET /:id so "pending-cosign" isn't swallowed as a record id. */
+recordsRouter.get(
+  "/pending-cosign",
+  asyncHandler(async (req, res) => {
+    const records = await prisma.manufacturingRecord.findMany({
+      where: {
+        status: "APPROVED",
+        anchorProposedAt: { not: null },
+        anchoredAt: null,
+        anchorProposedBy: { not: req.user!.email },
+      },
+      orderBy: { anchorProposedAt: "asc" },
+      include: withRelations,
+    });
+
+    res.json({ count: records.length, items: records.map(withAnomalies) });
+  })
+);
+
 recordsRouter.post(
   "/",
   requireRole("OPERATOR", "ADMIN"),

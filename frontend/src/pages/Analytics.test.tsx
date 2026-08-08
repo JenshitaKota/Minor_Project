@@ -19,6 +19,8 @@ function makeSummary(overrides: Partial<AnalyticsSummary>): AnalyticsSummary {
     verification: { checked: 1, passed: 1, passRatePercent: 100 },
     averageApprovalTimeMinutes: 12.5,
     anomalyCount: 0,
+    pendingCoSignatures: { records: 0, equipmentCalibrations: 0 },
+    equipmentStatus: { active: 0, overdue: 0, pendingCoSign: 0, retired: 0 },
     ...overrides,
   };
 }
@@ -83,5 +85,31 @@ describe("Analytics", () => {
       const value = screen.getByText("4");
       expect(value).toHaveClass("stat-value-warning");
     });
+  });
+
+  it("shows the combined pending co-signature count, broken down by type", async () => {
+    mockedApi.getAnalyticsSummary.mockResolvedValue(
+      makeSummary({ pendingCoSignatures: { records: 2, equipmentCalibrations: 3 } })
+    );
+    renderAnalytics();
+
+    await waitFor(() => expect(screen.getByText("2 records · 3 calibrations")).toBeInTheDocument());
+    const tile = screen.getByText("Awaiting co-signature").closest(".stat-tile");
+    expect(tile).not.toBeNull();
+    expect(tile!.querySelector(".stat-value")).toHaveTextContent("5");
+    expect(tile!.querySelector(".stat-value")).toHaveClass("stat-value-warning");
+  });
+
+  it("renders the equipment calibration status breakdown", async () => {
+    mockedApi.getAnalyticsSummary.mockResolvedValue(
+      makeSummary({ equipmentStatus: { active: 4, overdue: 1, pendingCoSign: 2, retired: 1 } })
+    );
+    renderAnalytics();
+
+    await waitFor(() => expect(screen.getByText("Equipment calibration status")).toBeInTheDocument());
+    expect(screen.getByText("ACTIVE")).toBeInTheDocument();
+    expect(screen.getByText("OVERDUE")).toBeInTheDocument();
+    expect(screen.getByText("PENDING CO-SIGN")).toBeInTheDocument();
+    expect(screen.getByText("RETIRED")).toBeInTheDocument();
   });
 });

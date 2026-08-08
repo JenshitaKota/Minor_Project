@@ -16,6 +16,16 @@ export default function Dashboard() {
   const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
   const [selectedRecordId, setSelectedRecordId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [pendingRecordCoSigns, setPendingRecordCoSigns] = useState(0);
+  const [pendingCalibrationCoSigns, setPendingCalibrationCoSigns] = useState(0);
+
+  const isAuditor = user?.role === "AUDITOR" || user?.role === "ADMIN";
+
+  useEffect(() => {
+    if (!isAuditor) return;
+    api.pendingRecordCoSigns().then((res) => setPendingRecordCoSigns(res.count)).catch(() => {});
+    api.pendingCalibrationCoSigns().then((res) => setPendingCalibrationCoSigns(res.count)).catch(() => {});
+  }, [isAuditor]);
 
   const loadPage = useCallback(async (pageToLoad: number, { append }: { append: boolean }) => {
     try {
@@ -70,9 +80,19 @@ export default function Dashboard() {
           </Link>
           <Link to="/records" className="nav-link">
             All Records
+            {pendingRecordCoSigns > 0 && (
+              <span className="pill pill-warning" style={{ marginLeft: 6 }} title="Records awaiting your co-signature">
+                {pendingRecordCoSigns}
+              </span>
+            )}
           </Link>
           <Link to="/equipment" className="nav-link">
             Equipment
+            {pendingCalibrationCoSigns > 0 && (
+              <span className="pill pill-warning" style={{ marginLeft: 6 }} title="Calibrations awaiting your co-signature">
+                {pendingCalibrationCoSigns}
+              </span>
+            )}
           </Link>
           <Link to="/verify" className="nav-link">
             Public Verification Page →
