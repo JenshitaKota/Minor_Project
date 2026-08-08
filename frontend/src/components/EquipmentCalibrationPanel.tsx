@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { api } from "../api";
+import { api, auditApi } from "../api";
 import { useAuth } from "../context/AuthContext";
 import type { Equipment, EquipmentCalibration, EquipmentStatus } from "../types";
 
@@ -57,10 +57,15 @@ export function EquipmentCalibrationPanel({ equipment, onEquipmentChanged }: Pro
     }
   }
 
+  // Same two-service, two-call pattern as RecordDetail's co-sign: the audit service
+  // signs on-chain first (its own session, its own key), then the main backend
+  // independently re-verifies that on-chain state before persisting - see
+  // docs/technical-disclosure.md §4.9.
   async function handleCoSign(calibrationId: string) {
     setBusy(calibrationId);
     setError(null);
     try {
+      await auditApi.cosignCalibration(equipment.id, calibrationId);
       const updated = await api.coSignCalibration(equipment.id, calibrationId);
       setCalibrations((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
       onEquipmentChanged({ ...equipment, status: "ACTIVE" });

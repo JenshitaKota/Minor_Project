@@ -1,13 +1,12 @@
-// Two distinct attestor keys, not one - anchoring requires both a proposer and an
-// independent co-signer (see chain/anchorRegistry.ts), so no single key can anchor
-// anything alone.
+// Only the QA attestor's key lives here - the Auditor's key lives in the separate
+// audit-service process (see chain/anchorRegistry.ts), so no single process holds
+// both keys required to anchor anything (see AnchorRegistry.proposeAnchor/coSignAnchor).
 const REQUIRED = [
   "DATABASE_URL",
   "JWT_SECRET",
   "RPC_URL",
   "CONTRACT_ADDRESS",
   "QA_ATTESTOR_PRIVATE_KEY",
-  "AUDITOR_ATTESTOR_PRIVATE_KEY",
 ] as const;
 
 export function assertEnv() {

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll } from "vitest";
 import request from "supertest";
 import { app } from "../src/app";
 import { loginAs, auth, uniqueId } from "./helpers";
+import { coSignOnChainAsAuditor } from "./chainHelpers";
 
 describe("batch and record lifecycle", () => {
   let operatorToken: string;
@@ -43,6 +44,10 @@ describe("batch and record lifecycle", () => {
     expect(approveRes.body.status).toBe("APPROVED");
     expect(approveRes.body.anchorProposedAt).toBeTruthy();
     expect(approveRes.body.anchoredTxHash).toBeFalsy();
+
+    // Simulates audit-service co-signing on-chain (see chainHelpers.ts) before the
+    // backend's now confirm-only /anchor-cosign endpoint is called.
+    await coSignOnChainAsAuditor(recordId);
 
     const coSignRes = await request(app)
       .post(`/records/${recordId}/anchor-cosign`)
@@ -107,6 +112,7 @@ describe("batch and record lifecycle", () => {
     expect(record.body.status).toBe("APPROVED");
 
     // A genuinely different person (the Auditor) can still co-sign the same proposal.
+    await coSignOnChainAsAuditor(recordId);
     const coSignRes = await request(app)
       .post(`/records/${recordId}/anchor-cosign`)
       .set("Authorization", auth(auditorToken));
@@ -140,6 +146,7 @@ describe("batch and record lifecycle", () => {
     const pendingFinding = beforeCoSign.body.findings.find((f: { id: string }) => f.id === "fast-approval");
     expect(pendingFinding.anchored).toBe(false);
 
+    await coSignOnChainAsAuditor(recordId);
     await request(app).post(`/records/${recordId}/anchor-cosign`).set("Authorization", auth(auditorToken));
 
     const findingsRes = await request(app)
@@ -167,6 +174,7 @@ describe("batch and record lifecycle", () => {
 
     await request(app).post(`/records/${recordId}/submit`).set("Authorization", auth(operatorToken));
     await request(app).post(`/records/${recordId}/approve`).set("Authorization", auth(qaToken));
+    await coSignOnChainAsAuditor(recordId);
     await request(app).post(`/records/${recordId}/anchor-cosign`).set("Authorization", auth(auditorToken));
 
     const beforeVerify = await request(app).get(`/records/${recordId}/verify`).set("Authorization", auth(qaToken));
@@ -206,6 +214,7 @@ describe("batch and record lifecycle", () => {
       .send({ content: { operator: "Test Op", observedQuantity: 985 } });
     await request(app).post(`/records/${recordId}/submit`).set("Authorization", auth(operatorToken));
     await request(app).post(`/records/${recordId}/approve`).set("Authorization", auth(qaToken));
+    await coSignOnChainAsAuditor(recordId);
     await request(app).post(`/records/${recordId}/anchor-cosign`).set("Authorization", auth(auditorToken));
 
     const eventsRes = await request(app).get(`/records/${recordId}/events`).set("Authorization", auth(qaToken));

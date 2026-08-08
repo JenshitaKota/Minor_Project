@@ -3,26 +3,26 @@ import abi from "./AnchorRegistry.abi.json";
 
 const provider = new JsonRpcProvider(process.env.RPC_URL);
 
-// Anchoring requires two *independent* attestors: the QA signer proposes (mirrors the
-// human QA approval that triggers it), the Auditor signer co-signs (mirrors an
-// independent human audit review). No single key - not even this backend process
-// alone - can anchor anything without both. See AnchorRegistry.proposeAnchor/coSignAnchor.
+// This backend holds only the QA attestor's key - the QA signer proposes (mirrors the
+// human QA approval that triggers it). The Auditor's key lives entirely in the
+// separate audit-service process (see audit-service/src/chain/anchorRegistry.ts); this
+// backend never calls coSignAnchor itself, only independently verifies on-chain state
+// after the audit service reports success (see routes/records.ts's confirmAnchor /
+// routes/equipment.ts's confirmCalibrationAnchor). No single process holds both keys.
 //
-// NonceManager wraps each signer because a single approval can fire more than one
-// on-chain write from the same key in quick succession (propose, then separately
-// co-sign); without it, each send re-queries the "pending" nonce from the node, which
-// can go stale between back-to-back sends under Hardhat's automining.
+// NonceManager wraps the signer because a single approval flow can fire more than one
+// on-chain write from this key in quick succession (e.g. retried propose calls);
+// without it, each send re-queries the "pending" nonce from the node, which can go
+// stale between back-to-back sends under Hardhat's automining.
 function makeSigner(privateKey: string) {
   return new NonceManager(new Wallet(privateKey, provider));
 }
 
 const qaSigner = makeSigner(process.env.QA_ATTESTOR_PRIVATE_KEY as string);
-const auditorSigner = makeSigner(process.env.AUDITOR_ATTESTOR_PRIVATE_KEY as string);
 
 const contractAddress = process.env.CONTRACT_ADDRESS as string;
 const readContract = new Contract(contractAddress, abi, provider);
 const qaContract = new Contract(contractAddress, abi, qaSigner);
-const auditorContract = new Contract(contractAddress, abi, auditorSigner);
 
 export interface VerifyResult {
   anchored: boolean;
@@ -79,31 +79,31 @@ export async function getPendingAnchorOnChain(recordIdBytes32: string): Promise<
 }
 
 /** Proposes anchoring a record's content hash plus any anomaly-finding hashes as one
- * package. Anchors nothing by itself - a separate coSignAnchorOnChain call, from the
- * independent Auditor signer, is required to finalize it. */
+ * package. Anchors nothing by itself - a separate coSignAnchor call, from the
+ * independent Auditor signer running in audit-service, is required to finalize it.
+ *
+ * ethers' NonceManager increments its cached nonce as soon as a send is attempted,
+ * before knowing whether it actually reaches the chain (e.g. a local gas-estimation
+ * revert, such as a stale retry against a record that's already anchored) - the cache
+ * is then permanently one ahead of reality, and every subsequent real send from this
+ * signer fails with "Nonce too high" until the process restarts. `reset()` forces it
+ * to re-query the actual on-chain nonce on the next attempt instead, so one caller's
+ * mistaken or stale propose attempt can't degrade this long-running singleton for
+ * every propose after it. */
 export async function proposeAnchorOnChain(
   recordIdBytes32: string,
   contentHash: string,
   findingHashes: string[]
 ): Promise<{ txHash: string; timestamp: number }> {
-  const tx = await qaContract.proposeAnchor(recordIdBytes32, contentHash, findingHashes);
-  const receipt = await tx.wait();
+  let receipt;
+  try {
+    const tx = await qaContract.proposeAnchor(recordIdBytes32, contentHash, findingHashes);
+    receipt = await tx.wait();
+  } catch (err) {
+    qaSigner.reset();
+    throw err;
+  }
 
   const pending = await getPendingAnchorOnChain(recordIdBytes32);
   return { txHash: receipt.hash, timestamp: pending.proposedAt || Math.floor(Date.now() / 1000) };
-}
-
-/** Independently confirms a pending proposal, finalizing the anchor and any bundled
- * anomaly findings in one transaction. Reverts on-chain if called by the same
- * attestor that proposed it - see AnchorRegistry.coSignAnchor. */
-export async function coSignAnchorOnChain(
-  recordIdBytes32: string,
-  contentHash: string,
-  findingHashes: string[]
-): Promise<{ txHash: string; timestamp: number }> {
-  const tx = await auditorContract.coSignAnchor(recordIdBytes32, contentHash, findingHashes);
-  const receipt = await tx.wait();
-
-  const { matches, timestamp } = await verifyOnChain(recordIdBytes32, contentHash);
-  return { txHash: receipt.hash, timestamp: matches ? timestamp : Math.floor(Date.now() / 1000) };
 }

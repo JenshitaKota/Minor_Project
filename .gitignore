@@ -26,6 +26,12 @@ backend/.windsurf/
 backend/.agents/
 backend/skills-lock.json
 
+# audit-service
+audit-service/.pgdata-test/
+audit-service/test/runtime.json
+audit-service/src/generated/
+audit-service/prisma/schema.prisma
+
 # OS
 .DS_Store
 Thumbs.db

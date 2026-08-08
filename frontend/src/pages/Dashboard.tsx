@@ -9,7 +9,7 @@ import { BatchDetail } from "../components/BatchDetail";
 import { RecordDetail } from "../components/RecordDetail";
 
 export default function Dashboard() {
-  const { user, logout } = useAuth();
+  const { user, logout, auditServiceWarning } = useAuth();
   const [batches, setBatches] = useState<BatchWithRecords[]>([]);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
@@ -113,6 +113,7 @@ export default function Dashboard() {
       </div>
 
       {loadError && <div className="error-banner">{loadError} — is the backend running on :4000?</div>}
+      {auditServiceWarning && <div className="warning-banner">{auditServiceWarning}</div>}
 
       <div className="layout">
         <div>

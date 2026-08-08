@@ -5,7 +5,7 @@ import { asyncHandler } from "../middleware/asyncHandler";
 import { authenticate, requireRole } from "../middleware/auth";
 import { validate } from "../middleware/validate";
 import { hashContent, recordIdToBytes32 } from "../chain/hash";
-import { proposeAnchorOnChain, coSignAnchorOnChain, verifyOnChain } from "../chain/anchorRegistry";
+import { proposeAnchorOnChain, verifyOnChain, findAnchorTxHash } from "../chain/anchorRegistry";
 
 export const equipmentRouter = Router();
 
@@ -187,10 +187,14 @@ equipmentRouter.post(
   })
 );
 
-/** Independently confirms a pending calibration proposal, finalizing the anchor
- * and returning the equipment to ACTIVE. Must be a different person than whoever
- * proposed it - checked here for a clear error, enforced again on-chain regardless
- * (AnchorRegistry.coSignAnchor reverts if called by the same attestor). */
+/** Confirms a pending calibration proposal after the Auditor has co-signed it via the
+ * separate audit-service, returning the equipment to ACTIVE. This endpoint never
+ * signs anything itself: it recomputes the expected hash, independently verifies
+ * on-chain that it's actually anchored (verifyOnChain), and independently re-derives
+ * the transaction hash from an on-chain event query rather than trusting a
+ * client-supplied one - see records.ts's confirmAnchor for the fuller rationale,
+ * applied identically here. Must be a different person than whoever proposed it -
+ * checked here for a clear error, enforced again on-chain regardless. */
 equipmentRouter.post(
   "/:id/calibration/:calibrationId/cosign",
   requireRole("AUDITOR", "ADMIN"),
@@ -207,14 +211,24 @@ equipmentRouter.post(
     }
 
     const recordIdBytes32 = recordIdToBytes32(calibration.id);
-    const result = await coSignAnchorOnChain(recordIdBytes32, calibration.contentHash!, []);
+    const contentHash = hashContent(calibrationContent(calibration));
+    const { anchored, matches, timestamp } = await verifyOnChain(recordIdBytes32, contentHash);
+
+    if (!anchored || !matches) {
+      return res.status(409).json({
+        error: "Not yet anchored on-chain with the expected content - the audit service's co-signature has not landed (or reverted). Retry once it has.",
+      });
+    }
+
+    const txHash = (await findAnchorTxHash(recordIdBytes32)) ?? "unknown (recovered from prior anchor)";
 
     const updated = await prisma.$transaction(async (tx) => {
       const updated = await tx.equipmentCalibration.update({
         where: { id: calibration.id },
         data: {
-          anchoredTxHash: result.txHash,
-          anchoredAt: new Date(result.timestamp * 1000),
+          contentHash,
+          anchoredTxHash: txHash,
+          anchoredAt: new Date(timestamp * 1000),
           anchorCoSignedBy: req.user!.email,
         },
       });

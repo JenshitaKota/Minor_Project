@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { RecordDetail } from "./RecordDetail";
-import { api } from "../api";
+import { api, auditApi } from "../api";
 import type { ManufacturingRecord, User } from "../types";
 
 const mockUseAuth = vi.fn();
@@ -22,9 +23,13 @@ vi.mock("../api", () => ({
     verify: vi.fn(),
     getAnomalyFindings: vi.fn().mockResolvedValue({ recordId: "rec-1", findings: [] }),
   },
+  auditApi: {
+    cosignRecord: vi.fn(),
+  },
 }));
 
-const mockedApi = api as unknown as { getAnomalyFindings: ReturnType<typeof vi.fn> };
+const mockedApi = api as unknown as { getAnomalyFindings: ReturnType<typeof vi.fn>; anchorCoSign: ReturnType<typeof vi.fn> };
+const mockedAuditApi = auditApi as unknown as { cosignRecord: ReturnType<typeof vi.fn> };
 
 function makeRecord(overrides: Partial<ManufacturingRecord>): ManufacturingRecord {
   return {
@@ -61,6 +66,9 @@ describe("RecordDetail — role and status gated actions", () => {
     mockUseAuth.mockReset();
     mockedApi.getAnomalyFindings.mockReset();
     mockedApi.getAnomalyFindings.mockResolvedValue({ recordId: "rec-1", findings: [] });
+    mockedApi.anchorCoSign.mockReset();
+    mockedAuditApi.cosignRecord.mockReset();
+    mockedAuditApi.cosignRecord.mockResolvedValue({ contentHash: "0xhash", txHash: "0xtx", alreadyAnchored: false });
   });
 
   it("lets an Operator edit an ANCHORED record — this is the tamper-detection demo itself", () => {
@@ -154,6 +162,23 @@ describe("RecordDetail — role and status gated actions", () => {
 
     expect(screen.getByRole("button", { name: /review & co-sign anchor/i })).toBeInTheDocument();
     expect(screen.getByText(/pending independent audit co-signature/i)).toBeInTheDocument();
+  });
+
+  it("co-signs through the independent audit service first, then confirms with the main backend", async () => {
+    mockUseAuth.mockReturnValue({ user: asUser("AUDITOR") });
+    mockedApi.anchorCoSign.mockResolvedValue(makeRecord({ status: "ANCHORED" }));
+    render(
+      <RecordDetail
+        record={makeRecord({ status: "APPROVED", anchorProposedAt: "2026-01-01T00:00:00.000Z", anchorProposedBy: "qa@test.com" })}
+        onChanged={vi.fn()}
+        onBack={vi.fn()}
+      />
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: /review & co-sign anchor/i }));
+
+    await waitFor(() => expect(mockedAuditApi.cosignRecord).toHaveBeenCalledWith("rec-1"));
+    await waitFor(() => expect(mockedApi.anchorCoSign).toHaveBeenCalledWith("rec-1"));
   });
 
   it("blocks the proposer from co-signing their own anchor, even as an Auditor-eligible Admin", () => {

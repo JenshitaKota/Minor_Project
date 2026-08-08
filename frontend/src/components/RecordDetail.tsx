@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { AnomalyFinding, Equipment, ManufacturingRecord, RecordContent, VerifyResult } from "../types";
 import { StatusBadge } from "./StatusBadge";
-import { api } from "../api";
+import { api, auditApi } from "../api";
 import { useAuth } from "../context/AuthContext";
 
 interface Props {
@@ -112,8 +112,14 @@ export function RecordDetail({ record, onChanged, onBack }: Props) {
       onChanged(updated);
     });
 
+  // Two independent services, two sequential calls: the audit-attestation service
+  // (its own session, its own key) actually signs on-chain first, then the main
+  // backend independently re-verifies that on-chain state itself before persisting -
+  // it never just trusts that the first call succeeded. See
+  // docs/technical-disclosure.md §4.9.
   const handleCoSign = () =>
     run("cosign", async () => {
+      await auditApi.cosignRecord(record.id);
       const updated = await api.anchorCoSign(record.id);
       onChanged(updated);
     });

@@ -3,7 +3,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import Equipment from "./Equipment";
-import { api } from "../api";
+import { api, auditApi } from "../api";
 import type { Equipment as EquipmentItem, User } from "../types";
 
 const mockUseAuth = vi.fn();
@@ -18,6 +18,9 @@ vi.mock("../api", () => ({
     calibrateEquipment: vi.fn(),
     coSignCalibration: vi.fn(),
   },
+  auditApi: {
+    cosignCalibration: vi.fn(),
+  },
 }));
 
 const mockedApi = api as unknown as {
@@ -28,6 +31,8 @@ const mockedApi = api as unknown as {
   calibrateEquipment: Mock;
   coSignCalibration: Mock;
 };
+
+const mockedAuditApi = auditApi as unknown as { cosignCalibration: Mock };
 
 function asUser(role: User["role"]): User {
   return { id: "u1", email: `${role}@test.com`, name: "Test User", role };
@@ -73,6 +78,8 @@ describe("Equipment page", () => {
     mockedApi.listCalibrations.mockResolvedValue([]);
     mockedApi.calibrateEquipment.mockReset();
     mockedApi.coSignCalibration.mockReset();
+    mockedAuditApi.cosignCalibration.mockReset();
+    mockedAuditApi.cosignCalibration.mockResolvedValue({ contentHash: "0xhash", txHash: "0xtx", alreadyAnchored: false });
   });
 
   it("lets an Operator change equipment status via a select", async () => {
@@ -186,6 +193,8 @@ describe("Equipment page", () => {
     const coSignBtn = await screen.findByRole("button", { name: /co-sign/i });
     await userEvent.click(coSignBtn);
 
+    // The independent audit service signs first, then the main backend confirms.
+    await waitFor(() => expect(mockedAuditApi.cosignCalibration).toHaveBeenCalledWith("eq-1", "cal-1"));
     await waitFor(() => expect(mockedApi.coSignCalibration).toHaveBeenCalledWith("eq-1", "cal-1"));
     expect(await screen.findByText("Anchored")).toBeInTheDocument();
   });

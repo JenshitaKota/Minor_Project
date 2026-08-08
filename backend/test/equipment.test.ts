@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll } from "vitest";
 import request from "supertest";
 import { app } from "../src/app";
 import { loginAs, auth, uniqueId } from "./helpers";
+import { coSignOnChainAsAuditor } from "./chainHelpers";
 
 function futureDate(daysFromNow: number): string {
   return new Date(Date.now() + daysFromNow * 24 * 60 * 60 * 1000).toISOString();
@@ -114,6 +115,10 @@ describe("equipment calibration anchoring", () => {
       .set("Authorization", auth(operatorToken))
       .send({ certificateNumber: uniqueId("CERT"), technician: "T. Bench", calibratedAt: new Date().toISOString(), nextDueAt: futureDate(180) });
     const calibrationId = calibrateRes.body.id;
+
+    // Simulates audit-service co-signing on-chain (see chainHelpers.ts) before the
+    // backend's now confirm-only /cosign endpoint is called.
+    await coSignOnChainAsAuditor(calibrationId);
 
     const coSignRes = await request(app)
       .post(`/equipment/${equipmentId}/calibration/${calibrationId}/cosign`)

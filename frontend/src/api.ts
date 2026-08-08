@@ -13,24 +13,35 @@ import type {
 } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:4000";
+// The independent audit-attestation service (see audit-service/) - a separate origin
+// with its own session, holding the Auditor's signing key. Never shares a cookie or
+// session with API_BASE; see AuthContext's dual login and makeRequest below.
+const AUDIT_API_BASE = import.meta.env.VITE_AUDIT_API_URL || "http://localhost:4100";
 
 // Auth is a backend-set httpOnly cookie (not readable/storable from JS - avoids XSS
-// token theft via localStorage). `credentials: "include"` sends and receives it.
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
+// token theft via localStorage). `credentials: "include"` sends and receives it. Each
+// service's cookie is scoped to its own origin, so this factory is reused for both
+// rather than assuming a single shared session.
+function makeRequest(base: string) {
+  return async function request<T>(path: string, options?: RequestInit): Promise<T> {
+    const res = await fetch(`${base}${path}`, {
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      ...options,
+    });
 
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(body.error || `Request failed with status ${res.status}`);
-  }
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(body.error || `Request failed with status ${res.status}`);
+    }
 
-  if (res.status === 204) return undefined as T;
-  return res.json();
+    if (res.status === 204) return undefined as T;
+    return res.json();
+  };
 }
+
+const request = makeRequest(API_BASE);
+const auditRequest = makeRequest(AUDIT_API_BASE);
 
 export interface PublicVerifyRecord {
   recordId: string;
@@ -177,4 +188,32 @@ export const api = {
 
   publicVerifyBatch: (batchNumber: string) =>
     request<PublicVerifyResponse>(`/public/verify/${encodeURIComponent(batchNumber)}`),
+};
+
+export interface AuditCoSignResult {
+  contentHash: string;
+  txHash?: string;
+  alreadyAnchored: boolean;
+}
+
+/** The independent audit-attestation service. Only Auditor/Admin accounts can log
+ * into it at all; every other call requires that session. See
+ * docs/technical-disclosure.md §4.9 for why this is a separate service rather than
+ * another endpoint on the main API. */
+export const auditApi = {
+  login: (email: string, password: string) =>
+    auditRequest<{ user: User }>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    }),
+
+  logout: () => auditRequest<void>("/auth/logout", { method: "POST" }),
+
+  cosignRecord: (recordId: string) =>
+    auditRequest<AuditCoSignResult>(`/records/${recordId}/cosign`, { method: "POST" }),
+
+  cosignCalibration: (equipmentId: string, calibrationId: string) =>
+    auditRequest<AuditCoSignResult & { calibrationId: string }>(`/equipment/${equipmentId}/calibration/${calibrationId}/cosign`, {
+      method: "POST",
+    }),
 };

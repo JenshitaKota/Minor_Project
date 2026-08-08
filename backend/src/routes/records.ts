@@ -7,7 +7,6 @@ import {
   verifyOnChain,
   findAnchorTxHash,
   proposeAnchorOnChain,
-  coSignAnchorOnChain,
   getPendingAnchorOnChain,
   getAnomalyFindingsOnChain,
 } from "../chain/anchorRegistry";
@@ -184,26 +183,41 @@ async function proposeAnchor(recordId: string) {
   }
 }
 
-/** Independently confirms a pending anchor proposal, finalizing it on-chain (the
- * content hash and every bundled anomaly finding, atomically) and updating the record
- * to ANCHORED. The caller must not be the same person who proposed it - checked here
- * for a clear error message, and enforced again on-chain regardless (the real
- * guarantee: coSignAnchor reverts if called by the same *attestor address* that
- * proposed).
- *
- * Honest scope note: this reference deployment holds both attestor private keys
- * (QA_ATTESTOR_PRIVATE_KEY, AUDITOR_ATTESTOR_PRIVATE_KEY) in the same backend process,
- * so the on-chain guarantee here is "two distinct signatures required," not yet "two
- * independently-operated systems required" - a fully compromised backend still holds
- * both keys. A production deployment would have the Auditor's key held and operated
- * by a separate system, ideally gated by that Auditor's own authentication rather
- * than this backend's. */
-async function coSignAnchor(record: AnchorableRecord, coSignedBy: string) {
+/** Independently confirms that a pending anchor proposal was actually finalized
+ * on-chain (the content hash and every bundled anomaly finding), then persists that
+ * fact. This backend never calls coSignAnchor itself - that call, and the Auditor's
+ * private key, live entirely in the separate audit-service process. This function's
+ * whole job is to *not* simply trust audit-service's word that it worked: it
+ * recomputes the expected package itself, reads current on-chain state via
+ * verifyOnChain, and only writes to the database if that independent read confirms
+ * an anchor exists with the exact expected hash. The transaction hash that gets
+ * persisted is likewise independently re-derived from an on-chain event query
+ * (findAnchorTxHash) rather than accepted from the caller - a client-supplied txHash
+ * is never trusted as the source of truth for what gets written (see
+ * docs/technical-disclosure.md §4.9). The caller must not be the same person who
+ * proposed it - checked here for a clear error message, and enforced again on-chain
+ * regardless by AnchorRegistry.coSignAnchor's own same-attestor check. */
+async function confirmAnchor(record: AnchorableRecord, coSignedBy: string, hintedTxHash?: string) {
   const recordIdBytes32 = recordIdToBytes32(record.id);
 
   try {
-    const { contentHash, snapshot, findingHashes } = await computeAnchorPackage(record);
-    const result = await coSignAnchorOnChain(recordIdBytes32, contentHash, findingHashes);
+    const { contentHash, snapshot } = await computeAnchorPackage(record);
+    const { anchored, matches, timestamp } = await verifyOnChain(recordIdBytes32, contentHash);
+
+    if (!anchored || !matches) {
+      const err = new Error(
+        "Not yet anchored on-chain with the expected content - the audit service's co-signature has not landed (or reverted). Retry once it has."
+      ) as Error & { statusCode: number };
+      err.statusCode = 409;
+      throw err;
+    }
+
+    const txHash = (await findAnchorTxHash(recordIdBytes32)) ?? "unknown (recovered from prior anchor)";
+    if (hintedTxHash && hintedTxHash !== txHash) {
+      // Not a security check - just surfaces a mismatch worth investigating. What
+      // gets persisted below is always the independently-derived txHash, never this.
+      console.warn(`Anchor confirm: hinted txHash ${hintedTxHash} != independently derived ${txHash} for record ${record.id}`);
+    }
 
     const updated = await prisma.$transaction(async (tx) => {
       const updated = await tx.manufacturingRecord.update({
@@ -212,14 +226,14 @@ async function coSignAnchor(record: AnchorableRecord, coSignedBy: string) {
           status: "ANCHORED",
           contentHash,
           anchoredSnapshot: snapshot,
-          anchoredTxHash: result.txHash,
-          anchoredAt: new Date(result.timestamp * 1000),
+          anchoredTxHash: txHash,
+          anchoredAt: new Date(timestamp * 1000),
           anchorCoSignedBy: coSignedBy,
         },
         include: withRelations,
       });
       await tx.recordEvent.create({
-        data: { recordId: record.id, stage: record.stage, type: "ANCHORED", actor: coSignedBy, detail: result.txHash },
+        data: { recordId: record.id, stage: record.stage, type: "ANCHORED", actor: coSignedBy, detail: txHash },
       });
       return updated;
     });
@@ -478,9 +492,11 @@ recordsRouter.post(
   })
 );
 
-/** Independently confirms a pending anchor proposal. Must be a different person than
- * whoever proposed it (see coSignAnchor above for why - checked here for a clear
- * error, enforced again on-chain as the real guarantee). */
+/** Confirms a pending anchor proposal after the Auditor has co-signed it via the
+ * separate audit-service (this endpoint never signs anything itself - see
+ * confirmAnchor above). Must be a different person than whoever proposed it - checked
+ * here for a clear error, enforced again on-chain as the real guarantee. An optional
+ * `txHash` in the body is accepted only as a debug hint, never trusted. */
 recordsRouter.post(
   "/:id/anchor-cosign",
   requireRole("AUDITOR", "ADMIN"),
@@ -494,7 +510,7 @@ recordsRouter.post(
       return res.status(403).json({ error: "You proposed this anchor - a different reviewer must independently co-sign it" });
     }
 
-    const updated = await coSignAnchor(record, req.user!.email);
+    const updated = await confirmAnchor(record, req.user!.email, req.body?.txHash);
     res.json(updated);
   })
 );

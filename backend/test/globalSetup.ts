@@ -73,7 +73,12 @@ export default async function setup() {
       RPC_URL: process.env.RPC_URL,
       CONTRACT_ADDRESS: process.env.CONTRACT_ADDRESS,
       QA_ATTESTOR_PRIVATE_KEY: process.env.QA_ATTESTOR_PRIVATE_KEY,
-      AUDITOR_ATTESTOR_PRIVATE_KEY: process.env.AUDITOR_ATTESTOR_PRIVATE_KEY,
+      // NOT read by the app's own env.ts (the backend no longer holds the Auditor's
+      // key - see docs/technical-disclosure.md §4.9). This is a test-only fixture:
+      // test/chainHelpers.ts uses it to simulate audit-service's on-chain co-sign
+      // action directly, so tests can exercise the backend's now confirm-only cosign
+      // routes without running that whole separate service.
+      TEST_AUDITOR_PRIVATE_KEY: process.env.TEST_AUDITOR_PRIVATE_KEY,
       JWT_SECRET: "test_secret_do_not_use_in_prod",
     })
   );
