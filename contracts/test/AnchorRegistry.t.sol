@@ -183,25 +183,192 @@ contract AnchorRegistryTest is Test {
         assertFalse(matches);
     }
 
-    function testOwnerCanAddAndRemoveAttestor() public {
-        address newAttestor = address(0xA773);
-        assertFalse(registry.isAttestor(newAttestor));
+    // --- Attestor-set governance: adding ---
 
-        vm.prank(owner);
-        registry.addAttestor(newAttestor);
-        assertTrue(registry.isAttestor(newAttestor));
+    function testProposeThenApproveAddsAttestor() public {
+        address candidate = address(0xA773);
+        assertFalse(registry.isAttestor(candidate));
+        assertEq(registry.attestorCount(), 2);
 
-        vm.prank(owner);
-        registry.removeAttestor(newAttestor);
-        assertFalse(registry.isAttestor(newAttestor));
+        vm.prank(attestor1);
+        registry.proposeAddAttestor(candidate);
+
+        vm.prank(attestor2);
+        registry.approveAddAttestor(candidate);
+
+        assertTrue(registry.isAttestor(candidate));
+        assertEq(registry.attestorCount(), 3);
     }
 
-    function testNonOwnerCannotAddAttestor() public {
+    function testCannotApproveOwnAddProposal() public {
+        address candidate = address(0xA773);
+
+        vm.startPrank(attestor1);
+        registry.proposeAddAttestor(candidate);
+
+        vm.expectRevert("AnchorRegistry: cannot approve your own proposal");
+        registry.approveAddAttestor(candidate);
+        vm.stopPrank();
+    }
+
+    function testNonAttestorCannotProposeAdd() public {
         vm.prank(stranger);
-        vm.expectRevert(
-            abi.encodeWithSignature("OwnableUnauthorizedAccount(address)", stranger)
-        );
-        registry.addAttestor(stranger);
+        vm.expectRevert("AnchorRegistry: not an attestor");
+        registry.proposeAddAttestor(address(0xA773));
+    }
+
+    function testNonAttestorCannotApproveAdd() public {
+        address candidate = address(0xA773);
+        vm.prank(attestor1);
+        registry.proposeAddAttestor(candidate);
+
+        vm.prank(stranger);
+        vm.expectRevert("AnchorRegistry: not an attestor");
+        registry.approveAddAttestor(candidate);
+    }
+
+    function testCannotProposeAddForExistingAttestor() public {
+        vm.prank(attestor1);
+        vm.expectRevert("AnchorRegistry: already an attestor");
+        registry.proposeAddAttestor(attestor2);
+    }
+
+    function testCannotApproveAddWithoutPendingProposal() public {
+        vm.prank(attestor2);
+        vm.expectRevert("AnchorRegistry: no pending add proposal");
+        registry.approveAddAttestor(address(0xA773));
+    }
+
+    /// @dev The owner has no path at all to add an attestor - only existing
+    /// attestors can propose, and `onlyAttestor` rejects the owner just like any
+    /// other non-attestor address.
+    function testOwnerCannotProposeAdd() public {
+        vm.prank(owner);
+        vm.expectRevert("AnchorRegistry: not an attestor");
+        registry.proposeAddAttestor(address(0xA773));
+    }
+
+    // --- Attestor-set governance: removing ---
+
+    function testOwnerProposedRemovalApprovedByAttestor() public {
+        address candidate = _addThirdAttestor();
+        assertEq(registry.attestorCount(), 3);
+
+        vm.prank(owner);
+        registry.proposeRemoveAttestor(candidate);
+
+        vm.prank(attestor1);
+        registry.approveRemoveAttestor(candidate);
+
+        assertFalse(registry.isAttestor(candidate));
+        assertEq(registry.attestorCount(), 2);
+    }
+
+    function testAttestorProposedRemovalApprovedByOwner() public {
+        address candidate = _addThirdAttestor();
+
+        vm.prank(attestor1);
+        registry.proposeRemoveAttestor(candidate);
+
+        vm.prank(owner);
+        registry.approveRemoveAttestor(candidate);
+
+        assertFalse(registry.isAttestor(candidate));
+    }
+
+    function testTargetCannotApproveOwnRemoval() public {
+        address candidate = _addThirdAttestor();
+
+        vm.prank(owner);
+        registry.proposeRemoveAttestor(candidate);
+
+        vm.prank(candidate);
+        vm.expectRevert("AnchorRegistry: target cannot approve their own removal");
+        registry.approveRemoveAttestor(candidate);
+    }
+
+    function testAttestorCannotApproveOwnerProposedRemovalTwice() public {
+        address candidate = _addThirdAttestor();
+
+        vm.prank(owner);
+        registry.proposeRemoveAttestor(candidate);
+
+        vm.prank(owner);
+        vm.expectRevert("AnchorRegistry: cannot approve your own proposal");
+        registry.approveRemoveAttestor(candidate);
+    }
+
+    /// @dev An attestor-proposed removal must be approved by the owner, not by
+    /// another attestor - a same-sized bloc of attestors cannot unilaterally
+    /// censor a peer.
+    function testAttestorCannotApproveAttestorProposedRemoval() public {
+        address candidate = _addThirdAttestor();
+
+        vm.prank(attestor1);
+        registry.proposeRemoveAttestor(candidate);
+
+        vm.prank(attestor2);
+        vm.expectRevert("AnchorRegistry: requires the owner to approve");
+        registry.approveRemoveAttestor(candidate);
+    }
+
+    /// @dev An owner-proposed removal must be approved by a distinct attestor, not
+    /// by a stranger or the owner acting alone.
+    function testStrangerCannotApproveOwnerProposedRemoval() public {
+        address candidate = _addThirdAttestor();
+
+        vm.prank(owner);
+        registry.proposeRemoveAttestor(candidate);
+
+        vm.prank(stranger);
+        vm.expectRevert("AnchorRegistry: requires a different attestor to approve");
+        registry.approveRemoveAttestor(candidate);
+    }
+
+    function testCannotProposeRemovalForNonAttestor() public {
+        vm.prank(owner);
+        vm.expectRevert("AnchorRegistry: target is not an attestor");
+        registry.proposeRemoveAttestor(stranger);
+    }
+
+    function testCannotProposeRemovalWhenAlreadyPending() public {
+        address candidate = _addThirdAttestor();
+
+        vm.prank(owner);
+        registry.proposeRemoveAttestor(candidate);
+
+        vm.prank(attestor1);
+        vm.expectRevert("AnchorRegistry: already proposed");
+        registry.proposeRemoveAttestor(candidate);
+    }
+
+    function testNonAuthorizedCannotProposeRemoval() public {
+        vm.prank(stranger);
+        vm.expectRevert("AnchorRegistry: not authorized");
+        registry.proposeRemoveAttestor(attestor1);
+    }
+
+    /// @dev With exactly the minimum 2 attestors, removal is blocked outright -
+    /// without this floor, dropping to 1 (or 0) would permanently brick the
+    /// contract's ability to ever admit another attestor, since adding requires
+    /// two distinct *existing* attestors to agree.
+    function testFloorPreventsRemovalBelowMinimum() public {
+        vm.prank(owner);
+        registry.proposeRemoveAttestor(attestor2);
+
+        vm.prank(attestor1);
+        vm.expectRevert("AnchorRegistry: would drop below minimum attestor count");
+        registry.approveRemoveAttestor(attestor2);
+    }
+
+    /// @dev Adds a third attestor via the real propose/approve path (not a test
+    /// shortcut) so removal-governance tests exercise a post-floor attestor count.
+    function _addThirdAttestor() internal returns (address candidate) {
+        candidate = address(0xA773);
+        vm.prank(attestor1);
+        registry.proposeAddAttestor(candidate);
+        vm.prank(attestor2);
+        registry.approveAddAttestor(candidate);
     }
 
     /// @dev Fuzz: for ANY recordId/hash pair, proposing then co-signing from a
@@ -244,5 +411,33 @@ contract AnchorRegistryTest is Test {
 
         (, bool matches, ) = registry.verifyRecord(recordId, tamperedHash);
         assertFalse(matches);
+    }
+
+    /// @dev Fuzz: for any candidate address distinct from the two seeded attestors,
+    /// propose-then-approve by two distinct attestors must always admit them.
+    function testFuzzProposeThenApproveAddAlwaysSucceedsForDistinctAttestors(address candidate) public {
+        vm.assume(candidate != address(0));
+        vm.assume(candidate != attestor1 && candidate != attestor2);
+
+        vm.prank(attestor1);
+        registry.proposeAddAttestor(candidate);
+        vm.prank(attestor2);
+        registry.approveAddAttestor(candidate);
+
+        assertTrue(registry.isAttestor(candidate));
+    }
+
+    /// @dev Fuzz: the same attestor can never approve its own attestor-add
+    /// proposal, for any candidate address.
+    function testFuzzCannotApproveOwnAddProposal(address candidate) public {
+        vm.assume(candidate != address(0));
+        vm.assume(candidate != attestor1 && candidate != attestor2);
+
+        vm.startPrank(attestor1);
+        registry.proposeAddAttestor(candidate);
+
+        vm.expectRevert("AnchorRegistry: cannot approve your own proposal");
+        registry.approveAddAttestor(candidate);
+        vm.stopPrank();
     }
 }

@@ -7,6 +7,11 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 /// verdicts about how they were reviewed - on-chain. Anchoring requires two
 /// independent attestors to jointly confirm each anchor (propose + co-sign), so no
 /// single party (not even the contract owner) can unilaterally anchor anything.
+/// Control of the attestor set itself is likewise not unilateral: adding a new
+/// attestor requires two distinct existing attestors to agree (the owner has no
+/// say at all in who becomes trusted), and removing one requires the owner and a
+/// distinct attestor to agree (so neither the owner alone nor a same-sized bloc of
+/// attestors can silently expand or censor the trusted set).
 /// @dev Stores only hashes, never record content itself.
 contract AnchorRegistry is Ownable {
     struct Anchor {
@@ -32,13 +37,40 @@ contract AnchorRegistry is Ownable {
         uint256 proposedAt;
     }
 
+    struct PendingAttestorAdd {
+        address proposedBy;
+        uint256 proposedAt;
+    }
+
+    /// @notice `proposedByOwner` records which side of the owner/attestor divide
+    /// proposed the removal, since approval must come from the *other* side.
+    struct PendingAttestorRemoval {
+        address proposedBy;
+        bool proposedByOwner;
+        uint256 proposedAt;
+    }
+
     mapping(bytes32 => Anchor) private _anchors;
     mapping(bytes32 => AnomalyFinding[]) private _anomalyFindings;
     mapping(bytes32 => PendingAnchor) private _pending;
     mapping(address => bool) public isAttestor;
+    mapping(address => PendingAttestorAdd) private _pendingAdd;
+    mapping(address => PendingAttestorRemoval) private _pendingRemoval;
+
+    /// @notice Number of active attestors. Removal is blocked from dropping this to
+    /// 2 or below, since adding a new attestor requires two distinct *existing*
+    /// attestors to agree - dropping below that floor would permanently brick the
+    /// contract's ability to ever admit another attestor.
+    uint256 public attestorCount;
+
+    uint256 private constant MIN_ATTESTOR_COUNT = 2;
 
     event AttestorAdded(address indexed attestor);
     event AttestorRemoved(address indexed attestor);
+    event AttestorAddProposed(address indexed candidate, address indexed proposedBy);
+    event AttestorAddApproved(address indexed candidate, address indexed approvedBy);
+    event AttestorRemovalProposed(address indexed target, address indexed proposedBy);
+    event AttestorRemovalApproved(address indexed target, address indexed approvedBy);
 
     event AnchorProposed(bytes32 indexed recordId, bytes32 contentHash, address indexed proposedBy);
 
@@ -68,23 +100,84 @@ contract AnchorRegistry is Ownable {
         }
     }
 
-    /// @notice Grants or revokes attestor status. Governance of *who may attest* stays
-    /// with the owner - a materially smaller trust surface than the single owner
-    /// directly controlling every anchoring decision, which is what this contract
-    /// otherwise removes.
-    function addAttestor(address attestor) external onlyOwner {
-        _setAttestor(attestor, true);
+    /// @notice Proposes admitting a new attestor. Callable only by an existing
+    /// attestor - the owner has no path to unilaterally add one, closing the hole
+    /// where a compromised owner key could inject a rogue attestor able to forge
+    /// future co-signatures.
+    function proposeAddAttestor(address candidate) external onlyAttestor {
+        require(candidate != address(0), "AnchorRegistry: zero address");
+        require(!isAttestor[candidate], "AnchorRegistry: already an attestor");
+        // slither-disable-next-line timestamp
+        require(_pendingAdd[candidate].proposedAt == 0, "AnchorRegistry: already proposed");
+
+        _pendingAdd[candidate] = PendingAttestorAdd({proposedBy: msg.sender, proposedAt: block.timestamp});
+        emit AttestorAddProposed(candidate, msg.sender);
     }
 
-    function removeAttestor(address attestor) external onlyOwner {
-        _setAttestor(attestor, false);
+    /// @notice Confirms a pending attestor-add proposal. Must be a *different*
+    /// attestor than whoever proposed it - the same two-independent-party guarantee
+    /// used for anchoring itself, applied to the attestor set.
+    function approveAddAttestor(address candidate) external onlyAttestor {
+        PendingAttestorAdd memory pending = _pendingAdd[candidate];
+        // slither-disable-next-line timestamp
+        require(pending.proposedAt != 0, "AnchorRegistry: no pending add proposal");
+        require(msg.sender != pending.proposedBy, "AnchorRegistry: cannot approve your own proposal");
+
+        delete _pendingAdd[candidate];
+        _setAttestor(candidate, true);
+        emit AttestorAddApproved(candidate, msg.sender);
+    }
+
+    /// @notice Proposes removing an attestor. Callable by the owner or by an
+    /// existing attestor - either side may initiate.
+    function proposeRemoveAttestor(address target) external {
+        require(msg.sender == owner() || isAttestor[msg.sender], "AnchorRegistry: not authorized");
+        require(isAttestor[target], "AnchorRegistry: target is not an attestor");
+        // slither-disable-next-line timestamp
+        require(_pendingRemoval[target].proposedAt == 0, "AnchorRegistry: already proposed");
+
+        _pendingRemoval[target] = PendingAttestorRemoval({
+            proposedBy: msg.sender,
+            proposedByOwner: msg.sender == owner(),
+            proposedAt: block.timestamp
+        });
+        emit AttestorRemovalProposed(target, msg.sender);
+    }
+
+    /// @notice Confirms a pending attestor removal. Approval must come from the
+    /// *other* side of the owner/attestor divide from whoever proposed it (an
+    /// owner-proposed removal needs a distinct attestor's approval; an
+    /// attestor-proposed removal needs the owner's approval) - so neither the owner
+    /// alone nor a same-sized bloc of attestors can unilaterally censor the set, and
+    /// the targeted attestor can never approve their own removal. Reverts if
+    /// completing the removal would drop the attestor count to the minimum floor.
+    function approveRemoveAttestor(address target) external {
+        PendingAttestorRemoval memory pending = _pendingRemoval[target];
+        // slither-disable-next-line timestamp
+        require(pending.proposedAt != 0, "AnchorRegistry: no pending removal proposal");
+        require(msg.sender != pending.proposedBy, "AnchorRegistry: cannot approve your own proposal");
+        require(msg.sender != target, "AnchorRegistry: target cannot approve their own removal");
+        require(attestorCount > MIN_ATTESTOR_COUNT, "AnchorRegistry: would drop below minimum attestor count");
+
+        if (pending.proposedByOwner) {
+            require(isAttestor[msg.sender], "AnchorRegistry: requires a different attestor to approve");
+        } else {
+            require(msg.sender == owner(), "AnchorRegistry: requires the owner to approve");
+        }
+
+        delete _pendingRemoval[target];
+        _setAttestor(target, false);
+        emit AttestorRemovalApproved(target, msg.sender);
     }
 
     function _setAttestor(address attestor, bool allowed) private {
+        if (isAttestor[attestor] == allowed) return;
         isAttestor[attestor] = allowed;
         if (allowed) {
+            attestorCount += 1;
             emit AttestorAdded(attestor);
         } else {
+            attestorCount -= 1;
             emit AttestorRemoved(attestor);
         }
     }
@@ -182,5 +275,13 @@ contract AnchorRegistry is Ownable {
 
     function getPendingAnchor(bytes32 recordId) external view returns (PendingAnchor memory) {
         return _pending[recordId];
+    }
+
+    function getPendingAttestorAdd(address candidate) external view returns (PendingAttestorAdd memory) {
+        return _pendingAdd[candidate];
+    }
+
+    function getPendingAttestorRemoval(address target) external view returns (PendingAttestorRemoval memory) {
+        return _pendingRemoval[target];
     }
 }
