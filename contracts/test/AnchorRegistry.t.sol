@@ -15,7 +15,7 @@ contract AnchorRegistryTest is Test {
         address[] memory attestors = new address[](2);
         attestors[0] = attestor1;
         attestors[1] = attestor2;
-        registry = new AnchorRegistry(owner, attestors);
+        registry = new AnchorRegistry(owner, attestors, 2);
     }
 
     function emptyFindings() internal pure returns (bytes32[] memory) {
@@ -369,6 +369,48 @@ contract AnchorRegistryTest is Test {
         registry.proposeAddAttestor(candidate);
         vm.prank(attestor2);
         registry.approveAddAttestor(candidate);
+    }
+
+    // --- Constructor validation (requiredConfirmations) ---
+
+    function testConstructorRevertsIfRequiredConfirmationsBelowTwo() public {
+        address[] memory attestors = new address[](2);
+        attestors[0] = attestor1;
+        attestors[1] = attestor2;
+
+        vm.expectRevert("AnchorRegistry: too few required confirmations");
+        new AnchorRegistry(owner, attestors, 1);
+    }
+
+    function testConstructorRevertsIfInitialAttestorsFewerThanRequired() public {
+        address[] memory attestors = new address[](2);
+        attestors[0] = attestor1;
+        attestors[1] = attestor2;
+
+        vm.expectRevert("AnchorRegistry: not enough initial attestors");
+        new AnchorRegistry(owner, attestors, 3);
+    }
+
+    /// @dev A duplicate address passes the raw array-length check but must still be
+    /// rejected, since _setAttestor is idempotent and would otherwise leave
+    /// attestorCount too low to ever reach requiredConfirmations again.
+    function testConstructorRevertsIfInitialAttestorsHaveDuplicates() public {
+        address[] memory attestors = new address[](2);
+        attestors[0] = attestor1;
+        attestors[1] = attestor1;
+
+        vm.expectRevert("AnchorRegistry: not enough distinct initial attestors");
+        new AnchorRegistry(owner, attestors, 2);
+    }
+
+    function testConstructorAcceptsExactlyRequiredConfirmations() public {
+        address[] memory attestors = new address[](2);
+        attestors[0] = attestor1;
+        attestors[1] = attestor2;
+
+        AnchorRegistry r = new AnchorRegistry(owner, attestors, 2);
+        assertEq(r.requiredConfirmations(), 2);
+        assertEq(r.attestorCount(), 2);
     }
 
     /// @dev Fuzz: for ANY recordId/hash pair, proposing then co-signing from a
