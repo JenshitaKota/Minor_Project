@@ -10,6 +10,8 @@ import {
   proposeAnchorOnChain,
   getPendingAnchorOnChain,
   getAnomalyFindingsOnChain,
+  cancelAnchorProposalOnChain,
+  type PendingAnchorOnChain,
 } from "../chain/anchorRegistry";
 import { asyncHandler } from "../middleware/asyncHandler";
 import { authenticate, requireRole } from "../middleware/auth";
@@ -50,12 +52,14 @@ async function transitionStatus(
 ) {
   const { count } = await tx.manufacturingRecord.updateMany({ where: { id, status: from }, data });
   if (count === 0) {
-    const err = new Error(`Record is no longer ${from} - it was changed by another request`) as Error & {
-      statusCode: number;
-    };
-    err.statusCode = 409;
-    throw err;
+    throw conflict(`Record is no longer ${from} - it was changed by another request`);
   }
+}
+
+function conflict(message: string) {
+  const err = new Error(message) as Error & { statusCode: number };
+  err.statusCode = 409;
+  return err;
 }
 
 function withAnomalies<T extends { submittedAt: Date | null; reviewedAt: Date | null }>(record: T) {
@@ -100,6 +104,25 @@ async function computeAnchorPackage(record: AnchorableRecord) {
   }
 
   return { contentHash, snapshot, findingHashes };
+}
+
+function isSamePackage(pending: PendingAnchorOnChain, contentHash: string, findingHashes: string[]) {
+  return (
+    pending.contentHash.toLowerCase() === contentHash.toLowerCase() &&
+    pending.findingHashes.length === findingHashes.length &&
+    pending.findingHashes.every((h, i) => h.toLowerCase() === findingHashes[i].toLowerCase())
+  );
+}
+
+/** Whether the chain holds a pending proposal for this record that the Auditor can
+ * still co-sign - i.e. one exists and matches the package this record recomputes to.
+ * False for a stale proposal, or none at all (e.g. a reset dev chain), either of which
+ * a re-propose can repair. */
+async function hasCoSignablePendingProposal(record: AnchorableRecord) {
+  const pending = await getPendingAnchorOnChain(recordIdToBytes32(record.id));
+  if (pending.proposedAt === 0) return false;
+  const { contentHash, findingHashes } = await computeAnchorPackage(record);
+  return isSamePackage(pending, contentHash, findingHashes);
 }
 
 /** Persists a chain-write failure as a durable, queryable RecordEvent instead of
@@ -158,8 +181,9 @@ async function syncAnchoredFromChain(record: AnchorableRecord, timestamp: number
  * itself - a *different*, independent Auditor must separately co-sign (see
  * coSignAnchor below) before it becomes permanent; see AnchorRegistry.proposeAnchor.
  * Safe to call more than once for the same record (e.g. retrying after a crash before
- * the DB write landed). */
-async function proposeAnchor(recordId: string) {
+ * the DB write landed). `replaceStale` (explicit QA retry only) allows withdrawing a
+ * pending proposal whose findings no longer match - never one whose content differs. */
+async function proposeAnchor(recordId: string, opts: { replaceStale?: boolean } = {}) {
   const record = await prisma.manufacturingRecord.findUniqueOrThrow({ where: { id: recordId } });
   const recordIdBytes32 = recordIdToBytes32(record.id);
 
@@ -173,13 +197,39 @@ async function proposeAnchor(recordId: string) {
     }
 
     const pending = await getPendingAnchorOnChain(recordIdBytes32);
+    const { contentHash, findingHashes } = await computeAnchorPackage(record);
     let proposedAt: number;
-    if (pending.proposedAt !== 0) {
+    let detail: string | undefined;
+    if (pending.proposedAt !== 0 && isSamePackage(pending, contentHash, findingHashes)) {
       // Already proposed on-chain (e.g. a crash before this DB write landed last time) -
       // re-proposing would revert, so just sync the DB state instead.
       proposedAt = pending.proposedAt;
     } else {
-      const { contentHash, findingHashes } = await computeAnchorPackage(record);
+      if (pending.proposedAt !== 0) {
+        // A pending proposal whose package no longer matches what this record
+        // recomputes to can never be co-signed (the Auditor recomputes independently
+        // and the contract requires an exact match).
+        if (pending.contentHash.toLowerCase() !== contentHash.toLowerCase()) {
+          // The record's content changed after it was approved and proposed. Never
+          // re-anchor that: it would anchor data nobody reviewed. The original
+          // proposal stays on-chain as evidence of what was approved.
+          throw conflict(
+            "Record content has changed since it was approved and proposed - refusing to anchor content that was never reviewed"
+          );
+        }
+        if (!opts.replaceStale) {
+          throw conflict("A stale anchor proposal is pending - a QA manager must explicitly re-propose via /anchor");
+        }
+        // Same content, different findings (e.g. ANOMALY_* config was corrected).
+        // Withdraw and replace - the contract emits the full withdrawn package
+        // (AnchorProposalCancelled), and the old finding hashes are recorded here too,
+        // so a replacement can never silently drop a finding. Reverts on-chain unless
+        // this key proposed it or it has expired.
+        await cancelAnchorProposalOnChain(recordIdBytes32);
+        detail =
+          `Replaced a stale proposal; withdrawn finding hashes: [${pending.findingHashes.join(", ")}], ` +
+          `new: [${findingHashes.join(", ")}]`;
+      }
       const result = await proposeAnchorOnChain(recordIdBytes32, contentHash, findingHashes);
       proposedAt = result.timestamp;
     }
@@ -191,7 +241,7 @@ async function proposeAnchor(recordId: string) {
         include: withRelations,
       });
       await tx.recordEvent.create({
-        data: { recordId: record.id, stage: record.stage, type: "ANCHOR_PROPOSED", actor: record.reviewedBy },
+        data: { recordId: record.id, stage: record.stage, type: "ANCHOR_PROPOSED", actor: record.reviewedBy, detail },
       });
       return updated;
     });
@@ -418,10 +468,13 @@ recordsRouter.post(
       return res.status(409).json({ error: `Cannot submit a record with status ${record.status}` });
     }
 
+    // The event's createdAt must equal submittedAt exactly - reviewer baselines are
+    // rebuilt from event history (see anomaly/baseline.ts).
+    const submittedAt = new Date();
     const updated = await prisma.$transaction(async (tx) => {
-      await transitionStatus(tx, record.id, "DRAFT", { status: "SUBMITTED", submittedAt: new Date() });
+      await transitionStatus(tx, record.id, "DRAFT", { status: "SUBMITTED", submittedAt });
       await tx.recordEvent.create({
-        data: { recordId: record.id, stage: record.stage, type: "SUBMITTED", actor: req.user!.email },
+        data: { recordId: record.id, stage: record.stage, type: "SUBMITTED", actor: req.user!.email, createdAt: submittedAt },
       });
       return tx.manufacturingRecord.findUniqueOrThrow({ where: { id: record.id }, include: withRelations });
     });
@@ -444,15 +497,17 @@ recordsRouter.post(
       return res.status(409).json({ error: `Cannot approve a record with status ${record.status}` });
     }
 
+    // createdAt === reviewedAt exactly, so baselines rebuilt from event history line up.
+    const reviewedAt = new Date();
     await prisma.$transaction(async (tx) => {
       await transitionStatus(tx, record.id, "SUBMITTED", {
         status: "APPROVED",
-        reviewedAt: new Date(),
+        reviewedAt,
         reviewedBy: req.user!.email,
         rejectionReason: null,
       });
       await tx.recordEvent.create({
-        data: { recordId: record.id, stage: record.stage, type: "APPROVED", actor: req.user!.email },
+        data: { recordId: record.id, stage: record.stage, type: "APPROVED", actor: req.user!.email, createdAt: reviewedAt },
       });
     });
 
@@ -474,15 +529,24 @@ recordsRouter.post(
 
     const { reason } = req.body;
 
+    // createdAt === reviewedAt exactly, so baselines rebuilt from event history line up.
+    const reviewedAt = new Date();
     const updated = await prisma.$transaction(async (tx) => {
       await transitionStatus(tx, record.id, "SUBMITTED", {
         status: "REJECTED",
-        reviewedAt: new Date(),
+        reviewedAt,
         reviewedBy: req.user!.email,
         rejectionReason: reason,
       });
       await tx.recordEvent.create({
-        data: { recordId: record.id, stage: record.stage, type: "REJECTED", actor: req.user!.email, detail: reason },
+        data: {
+          recordId: record.id,
+          stage: record.stage,
+          type: "REJECTED",
+          actor: req.user!.email,
+          detail: reason,
+          createdAt: reviewedAt,
+        },
       });
       return tx.manufacturingRecord.findUniqueOrThrow({ where: { id: record.id }, include: withRelations });
     });
@@ -490,9 +554,13 @@ recordsRouter.post(
   })
 );
 
-/** Manual retry for the rare case where approval succeeded but the on-chain propose
- * failed (record is left APPROVED with no pending proposal). This only re-proposes -
- * finalizing still requires a separate, independent Auditor co-signature. */
+/** Manual retry for an approved record that has no co-signable proposal on-chain:
+ * the on-chain propose failed (no proposal at all), or the pending proposal is stale -
+ * its findings no longer match what the record recomputes to (e.g. ANOMALY_* config
+ * was corrected), so the Auditor could never co-sign it. A stale proposal is withdrawn
+ * (publicly, with its full package logged on-chain) and replaced; one whose *content*
+ * differs is refused - see proposeAnchor. This only re-proposes - finalizing still
+ * requires a separate, independent Auditor co-signature. */
 recordsRouter.post(
   "/:id/anchor",
   requireRole("QA_MANAGER", "ADMIN"),
@@ -502,11 +570,11 @@ recordsRouter.post(
     if (record.status !== "APPROVED") {
       return res.status(409).json({ error: `Cannot propose an anchor for a record with status ${record.status}` });
     }
-    if (record.anchorProposedAt) {
+    if (record.anchorProposedAt && (await hasCoSignablePendingProposal(record))) {
       return res.status(409).json({ error: "Anchor already proposed - awaiting an independent Auditor co-signature" });
     }
 
-    const updated = await proposeAnchor(req.params.id);
+    const updated = await proposeAnchor(req.params.id, { replaceStale: true });
     res.json(updated);
   })
 );

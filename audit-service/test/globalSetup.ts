@@ -76,7 +76,9 @@ export default async function setup() {
   await admin.query("CREATE ROLE audit_readonly_test LOGIN PASSWORD 'audit_readonly_test'");
   await admin.query(`GRANT CONNECT ON DATABASE ${TEST_DB_NAME} TO audit_readonly_test`);
   await admin.query("GRANT USAGE ON SCHEMA public TO audit_readonly_test");
-  await admin.query('GRANT SELECT ON "User", "ManufacturingRecord", "EquipmentCalibration" TO audit_readonly_test');
+  await admin.query(
+    'GRANT SELECT ON "User", "ManufacturingRecord", "EquipmentCalibration", "RecordEvent" TO audit_readonly_test'
+  );
   await admin.end();
 
   const seedAdapter = new PrismaPg({ connectionString: SUPERUSER_DATABASE_URL });

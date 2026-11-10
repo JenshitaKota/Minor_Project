@@ -69,7 +69,9 @@ contract AnchorRegistry is Ownable {
     /// capped at exactly `requiredConfirmations` entries per recordId (a new
     /// confirmation is only ever accepted while a pending proposal exists, and
     /// finalizing deletes the pending entry), so this is bounded storage, not
-    /// unbounded growth. See getConfirmers.
+    /// unbounded growth. Cleared only when a still-pending proposal is cancelled
+    /// (see cancelAnchorProposal), so a replacement proposal starts from zero
+    /// confirmations. See getConfirmers.
     mapping(bytes32 => address[]) private _confirmers;
     mapping(bytes32 => mapping(address => bool)) private _hasConfirmed;
 
@@ -87,6 +89,12 @@ contract AnchorRegistry is Ownable {
     /// it post-deployment would itself be a new centralized control point over an
     /// already-anchored trust model.
     uint256 public immutable requiredConfirmations;
+
+    /// @notice How long a proposal must sit unfinalized before an attestor other
+    /// than its proposer may cancel it - recovery for a proposal that can never
+    /// gather its confirmations (e.g. the proposer's key was lost, or the other
+    /// attestors independently computed a different package and will never co-sign).
+    uint256 public constant PROPOSAL_EXPIRY = 7 days;
 
     event AttestorAdded(address indexed attestor);
     event AttestorRemoved(address indexed attestor);
@@ -118,6 +126,16 @@ contract AnchorRegistry is Ownable {
     /// (relevant once requiredConfirmations > 2), so an off-chain watcher doesn't
     /// need to poll getConfirmers to know a confirmation just landed.
     event AnchorConfirmed(bytes32 indexed recordId, address indexed confirmedBy, uint256 confirmationsCount);
+
+    /// @notice Carries the full withdrawn package, not just the recordId: cancelling
+    /// must never be a way to make an anomaly finding silently disappear - whatever
+    /// was proposed and withdrawn stays publicly visible in the event log.
+    event AnchorProposalCancelled(
+        bytes32 indexed recordId,
+        address indexed cancelledBy,
+        bytes32 contentHash,
+        bytes32[] findingHashes
+    );
 
     modifier onlyAttestor() {
         require(isAttestor[msg.sender], "AnchorRegistry: not an attestor");
@@ -308,6 +326,35 @@ contract AnchorRegistry is Ownable {
         }
 
         emit AnchorCoSigned(recordId, proposedBy, msg.sender);
+    }
+
+    /// @notice Cancels a pending, not-yet-finalized proposal so a corrected package
+    /// can be proposed for the same recordId - without this, a proposal the other
+    /// attestors will never confirm (their independently recomputed package differs)
+    /// blocks that recordId forever, since proposeAnchor reverts while one is pending.
+    /// The proposer may withdraw their own proposal at any time; any other attestor
+    /// only once it is PROPOSAL_EXPIRY old. This does not weaken the multi-party
+    /// guarantee: cancelling anchors nothing, a replacement still needs
+    /// requiredConfirmations fresh confirmations, a finalized anchor can never be
+    /// cancelled (there is no pending entry left to cancel), and the withdrawn package
+    /// is emitted in full so a withdrawal is never a silent suppression.
+    function cancelAnchorProposal(bytes32 recordId) external onlyAttestor {
+        PendingAnchor memory pending = _pending[recordId];
+        // slither-disable-next-line timestamp
+        require(pending.proposedAt != 0, "AnchorRegistry: no pending proposal");
+        if (msg.sender != pending.proposedBy) {
+            // slither-disable-next-line timestamp
+            require(block.timestamp >= pending.proposedAt + PROPOSAL_EXPIRY, "AnchorRegistry: proposal not expired");
+        }
+
+        address[] memory confirmers = _confirmers[recordId];
+        for (uint256 i = 0; i < confirmers.length; i++) {
+            delete _hasConfirmed[recordId][confirmers[i]];
+        }
+        delete _confirmers[recordId];
+        delete _pending[recordId];
+
+        emit AnchorProposalCancelled(recordId, msg.sender, pending.contentHash, pending.findingHashes);
     }
 
     /// @notice Compares a freshly computed hash against the anchored one.

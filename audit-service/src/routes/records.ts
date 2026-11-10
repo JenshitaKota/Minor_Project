@@ -2,7 +2,12 @@ import { Router } from "express";
 import { prisma } from "../db/client";
 import type { Prisma } from "../generated/prisma/client";
 import { hashRecord, hashAnomalyFinding, recordIdToBytes32, type HashableAnomalyFinding } from "../chain/hash";
-import { verifyOnChain, coSignAnchorOnChain } from "../chain/anchorRegistry";
+import {
+  verifyOnChain,
+  coSignAnchorOnChain,
+  getPendingAnchorOnChain,
+  type PendingAnchorOnChain,
+} from "../chain/anchorRegistry";
 import { asyncHandler } from "../middleware/asyncHandler";
 import { authenticate, requireRole } from "../middleware/auth";
 import { evaluateAnomalies, type Anomaly } from "../anomaly/rules";
@@ -52,6 +57,14 @@ async function computeAnchorPackage(record: AnchorableRecord) {
   return { contentHash, findingHashes };
 }
 
+function isSamePackage(pending: PendingAnchorOnChain, contentHash: string, findingHashes: string[]) {
+  return (
+    pending.contentHash.toLowerCase() === contentHash.toLowerCase() &&
+    pending.findingHashes.length === findingHashes.length &&
+    pending.findingHashes.every((h, i) => h.toLowerCase() === findingHashes[i].toLowerCase())
+  );
+}
+
 recordsRouter.use(authenticate, requireRole("AUDITOR", "ADMIN"));
 
 /** Independently confirms and co-signs a pending anchor proposal. This process never
@@ -79,6 +92,20 @@ recordsRouter.post(
     const existing = await verifyOnChain(recordIdBytes32, contentHash);
     if (existing.anchored && existing.matches) {
       return res.json({ recordId: record.id, contentHash, anchored: true, timestamp: existing.timestamp, alreadyAnchored: true });
+    }
+
+    // A pending proposal this service's own recomputation disagrees with can never be
+    // co-signed (the contract requires an exact match) - say so plainly instead of
+    // surfacing an opaque on-chain revert, and point at the fix.
+    const pending = await getPendingAnchorOnChain(recordIdBytes32);
+    if (pending.proposedAt !== 0 && !isSamePackage(pending, contentHash, findingHashes)) {
+      return res.status(409).json({
+        error:
+          "The pending on-chain proposal does not match the package this service independently recomputes. " +
+          "If only the anomaly findings differ (e.g. ANOMALY_* config differs between services), QA can " +
+          "re-propose via the main backend's POST /records/:id/anchor; if the record's content changed " +
+          "after approval, it will not be anchored.",
+      });
     }
 
     const result = await coSignAnchorOnChain(recordIdBytes32, contentHash, findingHashes);

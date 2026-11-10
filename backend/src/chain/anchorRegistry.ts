@@ -107,3 +107,18 @@ export async function proposeAnchorOnChain(
   const pending = await getPendingAnchorOnChain(recordIdBytes32);
   return { txHash: receipt.hash, timestamp: pending.proposedAt || Math.floor(Date.now() / 1000) };
 }
+
+/** Withdraws a pending (not yet finalized) proposal so a corrected package can be
+ * proposed in its place. Reverts unless this QA key proposed it or it has expired -
+ * see AnchorRegistry.cancelAnchorProposal. Same nonce-reset handling as
+ * proposeAnchorOnChain. */
+export async function cancelAnchorProposalOnChain(recordIdBytes32: string): Promise<{ txHash: string }> {
+  try {
+    const tx = await qaContract.cancelAnchorProposal(recordIdBytes32);
+    const receipt = await tx.wait();
+    return { txHash: receipt.hash };
+  } catch (err) {
+    qaSigner.reset();
+    throw err;
+  }
+}
