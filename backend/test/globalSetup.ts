@@ -27,9 +27,17 @@ async function assertChainReachable(rpcUrl: string) {
   }
 }
 
+function assertEnvSet(names: string[]) {
+  const missing = names.filter((name) => !process.env[name]);
+  if (missing.length > 0) {
+    throw new Error(`Missing required test env vars: ${missing.join(", ")} - see .env.example.`);
+  }
+}
+
 export default async function setup() {
   dotenv.config({ path: path.join(__dirname, "..", ".env") });
 
+  assertEnvSet(["RPC_URL", "CONTRACT_ADDRESS", "QA_ATTESTOR_PRIVATE_KEY", "TEST_AUDITOR_PRIVATE_KEY"]);
   await assertChainReachable(process.env.RPC_URL!);
 
   if (fs.existsSync(TEST_DATA_DIR)) {

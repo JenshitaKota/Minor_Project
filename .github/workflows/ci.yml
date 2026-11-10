@@ -21,8 +21,34 @@ jobs:
         working-directory: contracts
         run: forge test -vv
 
+  frontend:
+    name: Frontend (Vitest + typecheck + lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build (typecheck + bundle)
+        working-directory: frontend
+        run: npm run build
+
+      - name: Lint
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Run frontend tests
+        working-directory: frontend
+        run: npm test
+
   backend:
-    name: Backend (Vitest + local chain)
+    name: Backend + audit-service (Vitest + local chain)
     runs-on: ubuntu-latest
     env:
       JWT_SECRET: ci_test_secret
@@ -35,6 +61,10 @@ jobs:
       # can anchor anything alone. See AnchorRegistry.sol / contracts/scripts/deploy.ts.
       QA_ATTESTOR_PRIVATE_KEY: "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
       AUDITOR_ATTESTOR_PRIVATE_KEY: "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a"
+      # Test-only fixtures: each service's tests stand in for the *other* service's
+      # on-chain action, so each mirrors the other's attestor key.
+      TEST_AUDITOR_PRIVATE_KEY: "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a"
+      TEST_QA_PRIVATE_KEY: "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -75,4 +105,14 @@ jobs:
 
       - name: Run backend tests
         working-directory: backend
+        run: npm test
+
+      # Reuses the same chain + deployed contract; its test setup runs migrations
+      # from ../backend, so backend dependencies above must already be installed.
+      - name: Install audit-service dependencies
+        working-directory: audit-service
+        run: npm ci
+
+      - name: Run audit-service tests
+        working-directory: audit-service
         run: npm test
