@@ -36,6 +36,17 @@ describe("BatchList", () => {
     expect(screen.getByText(/3 records$/)).toBeInTheDocument();
   });
 
+  it("counts loaded records when the batch has no _count (dashboard swaps in full batches)", () => {
+    render(
+      <BatchList
+        batches={[{ ...makeBatch({ id: "b1" }), records: [{}, {}, {}, {}, {}] }]}
+        selectedId={null}
+        onSelect={vi.fn()}
+      />
+    );
+    expect(screen.getByText(/5 records$/)).toBeInTheDocument();
+  });
+
   it("marks the selected batch as active and leaves others unmarked", () => {
     render(
       <BatchList
