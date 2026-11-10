@@ -8,6 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "db:start": "ts-node --transpile-only scripts/start-db.ts",
+    "seed:demo": "node --env-file=.env scripts/seed-demo.mjs",
     "test": "vitest run"
   },
   "dependencies": {

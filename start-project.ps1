@@ -1,3 +1,6 @@
+# -SeedDemo: after everything is up, create fresh fully approved + anchored demo batches
+param([switch]$SeedDemo)
+
 $ErrorActionPreference = "Stop"
 
 $root = $PSScriptRoot
@@ -56,6 +59,23 @@ finally { Pop-Location }
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "Set-Location '$backend'; npm run dev"
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "Set-Location '$audit'; npm run dev"
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "Set-Location '$frontend'; npm run dev"
+
+# 7) Optional demo data (the chain is fresh, so earlier anchored records won't verify)
+if ($SeedDemo) {
+    Wait-ForPort 4000 "Backend" 120
+    Wait-ForPort 4100 "Audit service" 120
+    Push-Location $backend
+    try {
+        $seeded = $false
+        for ($attempt = 1; $attempt -le 3 -and -not $seeded; $attempt++) {
+            Start-Sleep -Seconds 3   # services accept connections slightly before they finish starting
+            npm run seed:demo
+            $seeded = $LASTEXITCODE -eq 0
+        }
+        if (-not $seeded) { Write-Warning "Demo seeding failed - run 'npm run seed:demo' in backend\ to retry" }
+    }
+    finally { Pop-Location }
+}
 
 Write-Host ""
 Write-Host "Project started."
