@@ -61,6 +61,29 @@ describe("batch and record lifecycle", () => {
     expect(verifyRes.body.matches).toBe(true);
   });
 
+  it("lets exactly one of two concurrent approvals through", async () => {
+    const batchRes = await request(app)
+      .post("/batches")
+      .set("Authorization", auth(operatorToken))
+      .send({ batchNumber: uniqueId("BATCH"), product: "Test Product", plannedQuantity: 1000 });
+    const createRes = await request(app)
+      .post("/records")
+      .set("Authorization", auth(operatorToken))
+      .send({ batchId: batchRes.body.id, stage: "Mixing", content: { observedQuantity: 990 } });
+    const recordId = createRes.body.id;
+    await request(app).post(`/records/${recordId}/submit`).set("Authorization", auth(operatorToken));
+
+    const results = await Promise.all([
+      request(app).post(`/records/${recordId}/approve`).set("Authorization", auth(qaToken)),
+      request(app).post(`/records/${recordId}/approve`).set("Authorization", auth(adminToken)),
+    ]);
+    expect(results.map((r) => r.status).sort()).toEqual([200, 409]);
+
+    const eventsRes = await request(app).get(`/records/${recordId}/events`).set("Authorization", auth(qaToken));
+    const approvals = eventsRes.body.filter((e: { type: string }) => e.type === "APPROVED");
+    expect(approvals).toHaveLength(1);
+  });
+
   it("blocks a QA_MANAGER from ever reaching the co-sign endpoint (role gate)", async () => {
     const batchRes = await request(app)
       .post("/batches")

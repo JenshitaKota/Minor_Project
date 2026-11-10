@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import type { Prisma } from "../generated/prisma/client";
+import type { RecordStatus } from "../generated/prisma/enums";
 import { prisma } from "../db/client";
 import { hashRecord, hashAnomalyFinding, recordIdToBytes32, type HashableAnomalyFinding } from "../chain/hash";
 import {
@@ -37,6 +38,25 @@ const editRecordSchema = z.object({
 const rejectSchema = z.object({
   reason: z.string().min(1, "reason is required"),
 });
+
+/** Moves a record out of `from` with the status check and the write in one statement,
+ * so two concurrent requests (e.g. two reviewers approving at once) can't both pass a
+ * stale findUnique check and double-apply the transition - the loser gets a 409. */
+async function transitionStatus(
+  tx: Prisma.TransactionClient,
+  id: string,
+  from: RecordStatus,
+  data: Prisma.ManufacturingRecordUpdateManyMutationInput
+) {
+  const { count } = await tx.manufacturingRecord.updateMany({ where: { id, status: from }, data });
+  if (count === 0) {
+    const err = new Error(`Record is no longer ${from} - it was changed by another request`) as Error & {
+      statusCode: number;
+    };
+    err.statusCode = 409;
+    throw err;
+  }
+}
 
 function withAnomalies<T extends { submittedAt: Date | null; reviewedAt: Date | null }>(record: T) {
   return { ...record, anomalies: evaluateAnomalies(record) };
@@ -399,15 +419,11 @@ recordsRouter.post(
     }
 
     const updated = await prisma.$transaction(async (tx) => {
-      const updated = await tx.manufacturingRecord.update({
-        where: { id: req.params.id },
-        data: { status: "SUBMITTED", submittedAt: new Date() },
-        include: withRelations,
-      });
+      await transitionStatus(tx, record.id, "DRAFT", { status: "SUBMITTED", submittedAt: new Date() });
       await tx.recordEvent.create({
         data: { recordId: record.id, stage: record.stage, type: "SUBMITTED", actor: req.user!.email },
       });
-      return updated;
+      return tx.manufacturingRecord.findUniqueOrThrow({ where: { id: record.id }, include: withRelations });
     });
     res.json(withAnomalies(updated));
   })
@@ -429,9 +445,11 @@ recordsRouter.post(
     }
 
     await prisma.$transaction(async (tx) => {
-      await tx.manufacturingRecord.update({
-        where: { id: req.params.id },
-        data: { status: "APPROVED", reviewedAt: new Date(), reviewedBy: req.user!.email, rejectionReason: null },
+      await transitionStatus(tx, record.id, "SUBMITTED", {
+        status: "APPROVED",
+        reviewedAt: new Date(),
+        reviewedBy: req.user!.email,
+        rejectionReason: null,
       });
       await tx.recordEvent.create({
         data: { recordId: record.id, stage: record.stage, type: "APPROVED", actor: req.user!.email },
@@ -457,15 +475,16 @@ recordsRouter.post(
     const { reason } = req.body;
 
     const updated = await prisma.$transaction(async (tx) => {
-      const updated = await tx.manufacturingRecord.update({
-        where: { id: req.params.id },
-        data: { status: "REJECTED", reviewedAt: new Date(), reviewedBy: req.user!.email, rejectionReason: reason },
-        include: withRelations,
+      await transitionStatus(tx, record.id, "SUBMITTED", {
+        status: "REJECTED",
+        reviewedAt: new Date(),
+        reviewedBy: req.user!.email,
+        rejectionReason: reason,
       });
       await tx.recordEvent.create({
         data: { recordId: record.id, stage: record.stage, type: "REJECTED", actor: req.user!.email, detail: reason },
       });
-      return updated;
+      return tx.manufacturingRecord.findUniqueOrThrow({ where: { id: record.id }, include: withRelations });
     });
     res.json(withAnomalies(updated));
   })
